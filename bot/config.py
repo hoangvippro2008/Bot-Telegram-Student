@@ -10,6 +10,7 @@ from typing import Any
 class BotConfig:
     token: str
     parse_mode: str | None
+    admin_ids: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class MessageConfig:
     help: str
     unknown_command: str
     text_fallback: str
+    admin_role: str
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,17 @@ def _number(data: dict[str, Any], key: str, minimum: float = 0) -> float:
     if value < minimum:
         raise ValueError(f"'{key}' phải >= {minimum:g} trong config.json")
     return value
+
+
+def _admin_ids(data: dict[str, Any]) -> tuple[int, ...]:
+    value = data.get("admin_ids", [])
+    if not isinstance(value, list):
+        raise ValueError("'bot.admin_ids' phải là mảng")
+
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        raise ValueError("Mỗi phần tử trong 'bot.admin_ids' phải là Telegram user ID")
+
+    return tuple(dict.fromkeys(value))
 
 
 def load_config(path: Path) -> Config:
@@ -119,8 +132,16 @@ def load_config(path: Path) -> Config:
     if bootstrap_retries < -1:
         raise ValueError("'runtime.bootstrap_retries' phải >= -1")
 
+    admin_role = messages.get("admin_role", "Role: Admin")
+    if not isinstance(admin_role, str) or not admin_role.strip():
+        raise ValueError("'messages.admin_role' phải là chuỗi không rỗng")
+
     return Config(
-        bot=BotConfig(token=token, parse_mode=parse_mode),
+        bot=BotConfig(
+            token=token,
+            parse_mode=parse_mode,
+            admin_ids=_admin_ids(bot),
+        ),
         runtime=RuntimeConfig(
             drop_pending_updates=drop_pending,
             allowed_updates=tuple(item.strip() for item in allowed),
@@ -137,5 +158,6 @@ def load_config(path: Path) -> Config:
             help=_text(messages, "help"),
             unknown_command=_text(messages, "unknown_command"),
             text_fallback=_text(messages, "text_fallback"),
+            admin_role=admin_role.strip(),
         ),
     )
