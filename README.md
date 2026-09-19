@@ -39,7 +39,8 @@ Ví dụ:
 {
   "bot": {
     "token": "BOT_TOKEN",
-    "parse_mode": "HTML"
+    "parse_mode": "HTML",
+    "admin_ids": [123456789]
   },
   "runtime": {
     "drop_pending_updates": true,
@@ -51,7 +52,8 @@ Ví dụ:
     "start": "Bot đang hoạt động. Dùng /help để xem lệnh.",
     "help": "Lệnh hiện có:\n/start - Khởi động bot\n/help - Xem trợ giúp\n/ping - Kiểm tra bot\n/id - Xem Telegram ID",
     "unknown_command": "Lệnh không tồn tại.",
-    "text_fallback": "Bot đã nhận tin nhắn."
+    "text_fallback": "Bot đã nhận tin nhắn.",
+    "admin_role": "Role: Admin"
   },
   "network": {
     "connect_timeout": 15,
