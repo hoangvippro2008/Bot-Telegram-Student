@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import html
+from datetime import datetime
 
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from bot.config import Config
@@ -30,12 +33,28 @@ def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 def _menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Kiểm tra thông tin", callback_data="admin:check")],
             [
-                InlineKeyboardButton("Thông tin hệ thống", callback_data="admin:system"),
-                InlineKeyboardButton("Trạng thái bot", callback_data="admin:bot"),
+                InlineKeyboardButton(
+                    "📊 Kiểm tra tổng quan",
+                    callback_data="admin:check",
+                )
             ],
-            [InlineKeyboardButton("Đóng", callback_data="admin:close")],
+            [
+                InlineKeyboardButton(
+                    "🖥 Hệ thống",
+                    callback_data="admin:system",
+                ),
+                InlineKeyboardButton(
+                    "🤖 Trạng thái bot",
+                    callback_data="admin:bot",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "✖️ Đóng",
+                    callback_data="admin:close",
+                )
+            ],
         ]
     )
 
@@ -43,16 +62,41 @@ def _menu() -> InlineKeyboardMarkup:
 def _detail_menu(refresh: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Làm mới", callback_data=refresh)],
-            [InlineKeyboardButton("Quay lại", callback_data="admin:menu")],
+            [
+                InlineKeyboardButton("🔄 Làm mới", callback_data=refresh),
+                InlineKeyboardButton("⬅️ Quay lại", callback_data="admin:menu"),
+            ]
         ]
     )
 
 
-def _percent(used: int | None, total: int | None) -> str:
+def _percent(used: int | None, total: int | None) -> float | None:
     if used is None or total is None or total <= 0:
+        return None
+    return used / total * 100
+
+
+def _bar(value: float | None, size: int = 10) -> str:
+    if value is None:
+        return "░" * size
+
+    value = max(0.0, min(100.0, value))
+    filled = round(value / 100 * size)
+    return "▰" * filled + "▱" * (size - filled)
+
+
+def _usage(value: float | None) -> str:
+    if value is None:
         return "N/A"
-    return f"{used / total * 100:.1f}%"
+    return f"{value:.1f}%"
+
+
+def _safe(value: object) -> str:
+    return html.escape(str(value))
+
+
+def _updated_at() -> str:
+    return datetime.now().strftime("%H:%M:%S")
 
 
 def _system_text(stats) -> str:
@@ -61,34 +105,42 @@ def _system_text(stats) -> str:
         if stats.ram_total is not None and stats.ram_available is not None
         else None
     )
+    ram_percent = _percent(ram_used, stats.ram_total)
+    disk_percent = _percent(stats.disk_used, stats.disk_total)
+    cpu_percent = stats.cpu_percent
     load = (
         " / ".join(f"{value:.2f}" for value in stats.load_average)
         if stats.load_average
         else "N/A"
     )
-    cpu = f"{stats.cpu_percent:.1f}%" if stats.cpu_percent is not None else "N/A"
 
     return (
-        "THÔNG TIN HỆ THỐNG\n\n"
-        f"Host: {stats.hostname}\n"
-        f"OS: {stats.os_name} {stats.os_release}\n"
-        f"Kiến trúc: {stats.architecture}\n"
-        f"CPU: {stats.cpu_name}\n"
-        f"CPU sử dụng: {cpu}\n"
-        f"CPU logic: {stats.cpu_count}\n"
-        f"Threads Python: {stats.threads}\n"
-        f"Load avg: {load}\n\n"
-        "RAM\n"
-        f"Đang dùng: {format_bytes(ram_used)} / {format_bytes(stats.ram_total)}"
-        f" ({_percent(ram_used, stats.ram_total)})\n"
-        f"Còn trống: {format_bytes(stats.ram_available)}\n"
-        f"Bot process: {format_bytes(stats.process_ram)}\n\n"
-        "Ổ ĐĨA\n"
-        f"Đang dùng: {format_bytes(stats.disk_used)} / {format_bytes(stats.disk_total)}"
-        f" ({_percent(stats.disk_used, stats.disk_total)})\n"
-        f"Còn trống: {format_bytes(stats.disk_free)}\n\n"
-        f"Python: {stats.python_version}\n"
-        f"PID: {stats.pid}"
+        "🖥 <b>THÔNG TIN HỆ THỐNG</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🏷 <b>Host:</b> <code>{_safe(stats.hostname)}</code>\n"
+        f"💻 <b>Hệ điều hành:</b> {_safe(stats.os_name)} {_safe(stats.os_release)}\n"
+        f"🧩 <b>Kiến trúc:</b> <code>{_safe(stats.architecture)}</code>\n\n"
+        "⚙️ <b>CPU</b>\n"
+        f"└ {_safe(stats.cpu_name)}\n"
+        f"   {_bar(cpu_percent)}  <b>{_usage(cpu_percent)}</b>\n"
+        f"   Luồng CPU: <code>{stats.cpu_count}</code> · "
+        f"Python: <code>{stats.threads}</code>\n"
+        f"   Load: <code>{_safe(load)}</code>\n\n"
+        "🧠 <b>RAM</b>\n"
+        f"   {_bar(ram_percent)}  <b>{_usage(ram_percent)}</b>\n"
+        f"   Dùng: <code>{format_bytes(ram_used)}</code> / "
+        f"<code>{format_bytes(stats.ram_total)}</code>\n"
+        f"   Trống: <code>{format_bytes(stats.ram_available)}</code>\n"
+        f"   Bot: <code>{format_bytes(stats.process_ram)}</code>\n\n"
+        "💾 <b>Ổ đĩa</b>\n"
+        f"   {_bar(disk_percent)}  <b>{_usage(disk_percent)}</b>\n"
+        f"   Dùng: <code>{format_bytes(stats.disk_used)}</code> / "
+        f"<code>{format_bytes(stats.disk_total)}</code>\n"
+        f"   Trống: <code>{format_bytes(stats.disk_free)}</code>\n\n"
+        "🐍 <b>Tiến trình</b>\n"
+        f"   Python: <code>{_safe(stats.python_version)}</code>\n"
+        f"   PID: <code>{stats.pid}</code>\n\n"
+        f"🕒 <i>Cập nhật lúc {_updated_at()}</i>"
     )
 
 
@@ -98,14 +150,59 @@ def _bot_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     username = f"@{bot.username}" if bot.username else "N/A"
 
     return (
-        "TRẠNG THÁI BOT\n\n"
-        "Trạng thái: Online\n"
-        f"Username: {username}\n"
-        f"Bot ID: {bot.id}\n"
-        f"Uptime: {format_duration(process_uptime())}\n"
-        f"Admin: {len(config.bot.admin_ids)}\n"
-        f"Update queue: {context.application.update_queue.qsize()}\n"
-        f"python-telegram-bot: {telegram.__version__}"
+        "🤖 <b>TRẠNG THÁI BOT</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🟢 <b>Online</b>\n\n"
+        f"👤 <b>Username:</b> <code>{_safe(username)}</code>\n"
+        f"🆔 <b>Bot ID:</b> <code>{bot.id}</code>\n"
+        f"⏱ <b>Uptime:</b> <code>{format_duration(process_uptime())}</code>\n"
+        f"👑 <b>Quản trị viên:</b> <code>{len(config.bot.admin_ids)}</code>\n"
+        f"📥 <b>Update chờ:</b> <code>{context.application.update_queue.qsize()}</code>\n"
+        f"📦 <b>PTB:</b> <code>{_safe(telegram.__version__)}</code>\n\n"
+        f"🕒 <i>Cập nhật lúc {_updated_at()}</i>"
+    )
+
+
+def _overview_text(context: ContextTypes.DEFAULT_TYPE, stats) -> str:
+    ram_used = (
+        stats.ram_total - stats.ram_available
+        if stats.ram_total is not None and stats.ram_available is not None
+        else None
+    )
+    ram_percent = _percent(ram_used, stats.ram_total)
+    disk_percent = _percent(stats.disk_used, stats.disk_total)
+    cpu_percent = stats.cpu_percent
+    bot = context.bot
+    username = f"@{bot.username}" if bot.username else "N/A"
+
+    return (
+        "✨ <b>TỔNG QUAN QUẢN TRỊ</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 <b>Bot:</b> <code>{_safe(username)}</code> · 🟢 Online\n"
+        f"⏱ <b>Uptime:</b> <code>{format_duration(process_uptime())}</code>\n\n"
+        "⚙️ <b>CPU</b>\n"
+        f"   {_bar(cpu_percent)}  <b>{_usage(cpu_percent)}</b>\n"
+        f"   <code>{stats.cpu_count}</code> luồng logic\n\n"
+        "🧠 <b>RAM</b>\n"
+        f"   {_bar(ram_percent)}  <b>{_usage(ram_percent)}</b>\n"
+        f"   <code>{format_bytes(ram_used)}</code> / "
+        f"<code>{format_bytes(stats.ram_total)}</code>\n\n"
+        "💾 <b>Ổ đĩa</b>\n"
+        f"   {_bar(disk_percent)}  <b>{_usage(disk_percent)}</b>\n"
+        f"   Còn <code>{format_bytes(stats.disk_free)}</code>\n\n"
+        f"🕒 <i>Cập nhật lúc {_updated_at()}</i>"
+    )
+
+
+def _menu_text(update: Update) -> str:
+    user = update.effective_user
+    name = _safe(user.full_name) if user else "Admin"
+
+    return (
+        "🌿 <b>BẢNG QUẢN TRỊ</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Xin chào <b>{name}</b> 👋\n\n"
+        "Chọn mục cần kiểm tra bên dưới."
     )
 
 
@@ -114,9 +211,9 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.effective_message.reply_text(
-        "BẢNG QUẢN TRỊ\n\nChọn chức năng:",
+        _menu_text(update),
         reply_markup=_menu(),
-        parse_mode=None,
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -134,21 +231,24 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "admin:menu":
         await query.edit_message_text(
-            "BẢNG QUẢN TRỊ\n\nChọn chức năng:",
+            _menu_text(update),
             reply_markup=_menu(),
-            parse_mode=None,
+            parse_mode=ParseMode.HTML,
         )
         return
 
     if data == "admin:close":
-        await query.edit_message_text("Đã đóng bảng quản trị.", parse_mode=None)
+        await query.edit_message_text(
+            "✅ <b>Đã đóng bảng quản trị.</b>",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if data == "admin:bot":
         await query.edit_message_text(
             _bot_text(context),
             reply_markup=_detail_menu("admin:bot"),
-            parse_mode=None,
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -159,15 +259,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             text = _system_text(stats)
             refresh = "admin:system"
         else:
-            text = (
-                "KIỂM TRA THÔNG TIN\n\n"
-                f"{_bot_text(context)}\n\n"
-                f"{_system_text(stats)}"
-            )
+            text = _overview_text(context, stats)
             refresh = "admin:check"
 
         await query.edit_message_text(
             text,
             reply_markup=_detail_menu(refresh),
-            parse_mode=None,
+            parse_mode=ParseMode.HTML,
         )
