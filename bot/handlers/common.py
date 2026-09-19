@@ -14,8 +14,16 @@ def _config(context: ContextTypes.DEFAULT_TYPE) -> Config:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_message:
-        await update.effective_message.reply_text(_config(context).messages.start)
+    if not update.effective_message:
+        return
+
+    config = _config(context)
+    text = config.messages.start
+
+    if update.effective_user and update.effective_user.id in config.bot.admin_ids:
+        text = f"{text}\n\n{config.messages.admin_role}"
+
+    await update.effective_message.reply_text(text)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
