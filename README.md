@@ -10,9 +10,11 @@ Project này đang để phần khung chính trước, sau đó mới thêm dầ
 .
 ├─ bot/
 │  ├─ handlers/
+│  │  ├─ admin.py
 │  │  └─ common.py
 │  ├─ app.py
-│  └─ config.py
+│  ├─ config.py
+│  └─ system.py
 ├─ main.py
 ├─ requirements.txt
 └─ run.bat
@@ -21,7 +23,8 @@ Project này đang để phần khung chính trước, sau đó mới thêm dầ
 - `main.py`: điểm chạy chính.
 - `bot/app.py`: khởi tạo bot, polling và đăng ký handler.
 - `bot/config.py`: đọc và kiểm tra cấu hình.
-- `bot/handlers/`: xử lý command và message.
+- `bot/handlers/`: xử lý command, message và admin panel.
+- `bot/system.py`: đọc thông tin máy cho admin.
 
 ## Cài đặt
 
@@ -63,18 +66,18 @@ Ví dụ:
 }
 ```
 
+`admin_ids` dùng Telegram User ID. Có thể lấy ID bằng lệnh `/id`.
+
 ## Chạy bot
 
-Có thể chạy trực tiếp:
-
 ```bat
-python main.py
+run.bat
 ```
 
 hoặc:
 
 ```bat
-run.bat
+python main.py
 ```
 
 ## Lệnh hiện tại
@@ -84,6 +87,14 @@ run.bat
 /help
 /ping
 /id
+/admin
 ```
 
-Các chức năng khác sẽ được thêm trực tiếp vào project khi cần.
+`/admin` chỉ hoạt động với ID có trong `admin_ids`. Trong Telegram, lệnh này chỉ được đăng ký vào command menu của admin.
+
+Admin panel hiện có:
+- Kiểm tra thông tin
+- Thông tin hệ thống
+- Trạng thái bot
+
+Phần kiểm tra hệ thống hiển thị CPU, logical cores, threads, RAM, RAM của process bot, ổ đĩa, hệ điều hành, Python, PID và uptime.
