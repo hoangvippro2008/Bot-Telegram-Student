@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from time import monotonic
 
-from telegram import BotCommand, BotCommandScopeChat
+from telegram import BotCommand, BotCommandScopeChat, Update
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TelegramError
 from telegram.ext import (
@@ -14,20 +14,13 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     Defaults,
-    MessageHandler,
-    filters,
+    TypeHandler,
 )
 
 from bot.config import Config, load_config
+from bot.handlers.access import access_guard, check_access
 from bot.handlers.admin import admin, admin_callback
-from bot.handlers.common import (
-    help_command,
-    ping,
-    start,
-    text_fallback,
-    unknown_command,
-    user_id,
-)
+from bot.handlers.common import start
 
 logger = logging.getLogger(__name__)
 _last_network_error = 0.0
@@ -55,17 +48,15 @@ def _logging(level: str) -> None:
 
 
 async def _post_init(application: Application) -> None:
-    commands = [
-        BotCommand("start", "Khởi động bot"),
-        BotCommand("help", "Xem trợ giúp"),
-        BotCommand("ping", "Kiểm tra bot"),
-        BotCommand("id", "Xem Telegram ID"),
-    ]
-    await application.bot.set_my_commands(commands)
+    member_commands = [BotCommand("start", "Bắt đầu")]
+    await application.bot.set_my_commands(member_commands)
 
     config = application.bot_data.get("config")
     if isinstance(config, Config):
-        admin_commands = [*commands, BotCommand("admin", "Bảng quản trị")]
+        admin_commands = [
+            BotCommand("start", "Bắt đầu"),
+            BotCommand("admin", "Bảng quản trị"),
+        ]
         for admin_id in config.bot.admin_ids:
             try:
                 await application.bot.set_my_commands(
@@ -74,7 +65,7 @@ async def _post_init(application: Application) -> None:
                 )
             except TelegramError as exc:
                 logger.warning(
-                    "Không thể đăng ký /admin cho Telegram ID %s: %s",
+                    "Không thể đăng ký lệnh admin cho Telegram ID %s: %s",
                     admin_id,
                     exc,
                 )
@@ -119,14 +110,14 @@ def build(config: Config) -> Application:
     )
 
     application.bot_data["config"] = config
+
+    application.add_handler(TypeHandler(Update, access_guard), group=-1)
+
+    application.add_handler(CallbackQueryHandler(check_access, pattern=r"^access:check$"))
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("ping", ping))
-    application.add_handler(CommandHandler("id", user_id))
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin:"))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback))
+
     application.add_error_handler(_on_error)
     return application
 
@@ -136,7 +127,7 @@ def run(config_path: Path) -> None:
     _logging(config.runtime.log_level)
 
     allowed_updates = list(config.runtime.allowed_updates)
-    if config.bot.admin_ids and "callback_query" not in allowed_updates:
+    if (config.bot.admin_ids or config.group.enabled) and "callback_query" not in allowed_updates:
         allowed_updates.append("callback_query")
 
     logger.info("Đang khởi động bot bằng long polling")

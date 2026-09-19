@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+
+_PUBLIC_NAME = re.compile(r"^[A-Za-z0-9_]{5,32}$")
 
 
 @dataclass(frozen=True)
@@ -11,6 +16,13 @@ class BotConfig:
     token: str
     parse_mode: str | None
     admin_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class GroupConfig:
+    enabled: bool
+    chat_id: int | str | None
+    join_url: str | None
 
 
 @dataclass(frozen=True)
@@ -29,20 +41,11 @@ class NetworkConfig:
 
 
 @dataclass(frozen=True)
-class MessageConfig:
-    start: str
-    help: str
-    unknown_command: str
-    text_fallback: str
-    admin_role: str
-
-
-@dataclass(frozen=True)
 class Config:
     bot: BotConfig
+    group: GroupConfig
     runtime: RuntimeConfig
     network: NetworkConfig
-    messages: MessageConfig
 
 
 def _section(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -56,7 +59,7 @@ def _text(data: dict[str, Any], key: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"'{key}' phải là chuỗi không rỗng trong config.json")
-    return value
+    return value.strip()
 
 
 def _number(data: dict[str, Any], key: str, minimum: float = 0) -> float:
@@ -80,6 +83,94 @@ def _admin_ids(data: dict[str, Any]) -> tuple[int, ...]:
     return tuple(dict.fromkeys(value))
 
 
+def _public_chat_from_url(value: str) -> str | None:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.netloc.lower() not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
+        return None
+
+    path = parsed.path.strip("/")
+    if not path or "/" in path or path.startswith("+") or path.startswith("joinchat"):
+        return None
+    if not _PUBLIC_NAME.fullmatch(path):
+        return None
+    return f"@{path}"
+
+
+def _join_url(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("'group.join_url' phải là URL hoặc null")
+
+    url = value.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("'group.join_url' không phải URL hợp lệ")
+    return url
+
+
+def _group(data: dict[str, Any]) -> GroupConfig:
+    value = data.get("group")
+    if value is None:
+        return GroupConfig(enabled=False, chat_id=None, join_url=None)
+    if not isinstance(value, dict):
+        raise ValueError("'group' phải là object trong config.json")
+
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("'group.enabled' phải là true hoặc false")
+    if not enabled:
+        return GroupConfig(enabled=False, chat_id=None, join_url=_join_url(value.get("join_url")))
+
+    required = value.get("required_chat")
+    if isinstance(required, bool) or not isinstance(required, (int, str)):
+        raise ValueError("'group.required_chat' phải là chat ID, @username hoặc URL nhóm public")
+
+    join_url = _join_url(value.get("join_url"))
+    chat_id: int | str
+
+    if isinstance(required, int):
+        chat_id = required
+    else:
+        required = required.strip()
+        if not required:
+            raise ValueError("'group.required_chat' không được để trống")
+
+        if required.lstrip("-").isdigit():
+            chat_id = int(required)
+        elif required.startswith("@"):
+            username = required[1:]
+            if not _PUBLIC_NAME.fullmatch(username):
+                raise ValueError("'group.required_chat' có username Telegram không hợp lệ")
+            chat_id = f"@{username}"
+        elif required.startswith(("http://", "https://")):
+            public_chat = _public_chat_from_url(required)
+            if public_chat is None:
+                raise ValueError(
+                    "Link mời nhóm private không dùng làm required_chat. "
+                    "Hãy dùng chat ID dạng -100... và để link mời ở group.join_url"
+                )
+            chat_id = public_chat
+            if join_url is None:
+                join_url = required
+        elif _PUBLIC_NAME.fullmatch(required):
+            chat_id = f"@{required}"
+        else:
+            raise ValueError("'group.required_chat' không hợp lệ")
+
+    if join_url is None and isinstance(chat_id, str) and chat_id.startswith("@"):
+        join_url = f"https://t.me/{chat_id[1:]}"
+
+    if join_url is None:
+        raise ValueError(
+            "Nhóm dùng chat ID cần có 'group.join_url' để người dùng có nút tham gia"
+        )
+
+    return GroupConfig(enabled=True, chat_id=chat_id, join_url=join_url)
+
+
 def load_config(path: Path) -> Config:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -96,7 +187,6 @@ def load_config(path: Path) -> Config:
     bot = _section(data, "bot")
     runtime = _section(data, "runtime")
     network = _section(data, "network")
-    messages = _section(data, "messages")
 
     token = _text(bot, "token")
     if token == "PUT_BOT_TOKEN_HERE":
@@ -132,16 +222,13 @@ def load_config(path: Path) -> Config:
     if bootstrap_retries < -1:
         raise ValueError("'runtime.bootstrap_retries' phải >= -1")
 
-    admin_role = messages.get("admin_role", "Role: Admin")
-    if not isinstance(admin_role, str) or not admin_role.strip():
-        raise ValueError("'messages.admin_role' phải là chuỗi không rỗng")
-
     return Config(
         bot=BotConfig(
             token=token,
             parse_mode=parse_mode,
             admin_ids=_admin_ids(bot),
         ),
+        group=_group(data),
         runtime=RuntimeConfig(
             drop_pending_updates=drop_pending,
             allowed_updates=tuple(item.strip() for item in allowed),
@@ -152,12 +239,5 @@ def load_config(path: Path) -> Config:
             connect_timeout=_number(network, "connect_timeout", 0.1),
             read_timeout=_number(network, "read_timeout", 0.1),
             error_log_interval=_number(network, "error_log_interval"),
-        ),
-        messages=MessageConfig(
-            start=_text(messages, "start"),
-            help=_text(messages, "help"),
-            unknown_command=_text(messages, "unknown_command"),
-            text_fallback=_text(messages, "text_fallback"),
-            admin_role=admin_role.strip(),
         ),
     )
