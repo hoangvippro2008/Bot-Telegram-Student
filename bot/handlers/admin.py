@@ -6,10 +6,12 @@ from datetime import datetime
 
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.config import Config
+from bot.group import read_group_info
 from bot.system import (
     format_bytes,
     format_duration,
@@ -30,31 +32,20 @@ def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return bool(user and user.id in _config(context).bot.admin_ids)
 
 
+def _safe(value: object) -> str:
+    return html.escape(str(value))
+
+
 def _menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("👥 Nhóm người dùng", callback_data="admin:group")],
+            [InlineKeyboardButton("📊 Kiểm tra tổng quan", callback_data="admin:check")],
             [
-                InlineKeyboardButton(
-                    "📊 Kiểm tra tổng quan",
-                    callback_data="admin:check",
-                )
+                InlineKeyboardButton("🖥 Hệ thống", callback_data="admin:system"),
+                InlineKeyboardButton("🤖 Trạng thái bot", callback_data="admin:bot"),
             ],
-            [
-                InlineKeyboardButton(
-                    "🖥 Hệ thống",
-                    callback_data="admin:system",
-                ),
-                InlineKeyboardButton(
-                    "🤖 Trạng thái bot",
-                    callback_data="admin:bot",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "✖️ Đóng",
-                    callback_data="admin:close",
-                )
-            ],
+            [InlineKeyboardButton("✖️ Đóng", callback_data="admin:close")],
         ]
     )
 
@@ -68,6 +59,19 @@ def _detail_menu(refresh: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def _group_menu(config: Config) -> InlineKeyboardMarkup:
+    rows = []
+    if config.group.join_url:
+        rows.append([InlineKeyboardButton("🔗 Mở nhóm", url=config.group.join_url)])
+    rows.append(
+        [
+            InlineKeyboardButton("🔄 Làm mới", callback_data="admin:group"),
+            InlineKeyboardButton("⬅️ Quay lại", callback_data="admin:menu"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
 def _percent(used: int | None, total: int | None) -> float | None:
@@ -89,10 +93,6 @@ def _usage(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"{value:.1f}%"
-
-
-def _safe(value: object) -> str:
-    return html.escape(str(value))
 
 
 def _updated_at() -> str:
@@ -202,7 +202,84 @@ def _menu_text(update: Update) -> str:
         "🌿 <b>BẢNG QUẢN TRỊ</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"Xin chào <b>{name}</b> 👋\n\n"
-        "Chọn mục cần kiểm tra bên dưới."
+        "Chọn mục cần quản lý bên dưới."
+    )
+
+
+async def _group_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[str, InlineKeyboardMarkup]:
+    config = _config(context)
+    current_chat = update.effective_chat
+
+    current_hint = ""
+    if current_chat and current_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}:
+        current_hint = (
+            "\n\n💡 <b>Chat đang mở</b>\n"
+            f"ID: <code>{current_chat.id}</code>\n"
+            "Có thể dùng ID này cho <code>group.required_chat</code>."
+        )
+
+    if not config.group.enabled:
+        return (
+            "👥 <b>NHÓM NGƯỜI DÙNG</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔴 <b>Kiểm tra thành viên:</b> Đang tắt\n\n"
+            "Bật <code>group.enabled</code> trong <code>config.json</code> "
+            "để bắt buộc người dùng tham gia nhóm."
+            f"{current_hint}",
+            _group_menu(config),
+        )
+
+    try:
+        info = await read_group_info(context.bot, config.group)
+    except TelegramError as exc:
+        return (
+            "👥 <b>NHÓM NGƯỜI DÙNG</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🟢 <b>Kiểm tra thành viên:</b> Đang bật\n"
+            f"🎯 <b>Nhóm cấu hình:</b> <code>{_safe(config.group.chat_id)}</code>\n\n"
+            "⚠️ <b>Chưa đọc được thông tin nhóm.</b>\n"
+            f"<code>{_safe(exc)}</code>\n\n"
+            "Hãy kiểm tra bot đã được thêm vào nhóm và cấp quyền quản trị."
+            f"{current_hint}",
+            _group_menu(config),
+        )
+
+    bot_role = {
+        ChatMemberStatus.OWNER: "Chủ sở hữu",
+        ChatMemberStatus.ADMINISTRATOR: "Quản trị viên",
+        ChatMemberStatus.MEMBER: "Thành viên",
+        ChatMemberStatus.RESTRICTED: "Bị giới hạn",
+        ChatMemberStatus.LEFT: "Đã rời nhóm",
+        ChatMemberStatus.BANNED: "Bị chặn",
+    }.get(info.bot_status, info.bot_status)
+
+    warning = ""
+    if not info.bot_is_admin:
+        warning = (
+            "\n\n⚠️ <b>Cần cấp quyền quản trị cho bot.</b>\n"
+            "Telegram chỉ đảm bảo kiểm tra thành viên khác chính xác "
+            "khi bot là quản trị viên của nhóm."
+        )
+
+    username = f"@{info.username}" if info.username else "Nhóm riêng tư"
+
+    return (
+        "👥 <b>NHÓM NGƯỜI DÙNG</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🟢 <b>Kiểm tra thành viên:</b> Đang bật\n\n"
+        f"🏷 <b>Tên nhóm:</b> {_safe(info.title)}\n"
+        f"🆔 <b>Chat ID:</b> <code>{info.chat_id}</code>\n"
+        f"🔗 <b>Username:</b> <code>{_safe(username)}</code>\n"
+        f"🧩 <b>Loại:</b> <code>{_safe(info.chat_type)}</code>\n"
+        f"👤 <b>Thành viên:</b> <code>{info.member_count}</code>\n"
+        f"🤖 <b>Quyền bot:</b> {_safe(bot_role)}\n\n"
+        "🔒 Người chưa tham gia nhóm sẽ bị chặn trước khi vào chức năng bot."
+        f"{warning}{current_hint}\n\n"
+        f"🕒 <i>Cập nhật lúc {_updated_at()}</i>",
+        _group_menu(config),
     )
 
 
@@ -240,6 +317,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "admin:close":
         await query.edit_message_text(
             "✅ <b>Đã đóng bảng quản trị.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if data == "admin:group":
+        text, markup = await _group_text(update, context)
+        await query.edit_message_text(
+            text,
+            reply_markup=markup,
             parse_mode=ParseMode.HTML,
         )
         return
