@@ -114,28 +114,24 @@ async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if query is None or user is None:
         return
 
-    await query.answer()
-
     try:
         allowed = await has_membership(context.bot, config.group, user.id)
     except TelegramError as exc:
         logger.warning("Không thể kiểm tra lại thành viên %s: %s", user.id, exc)
-        await query.edit_message_text(
-            "⚠️ <b>Chưa kiểm tra được</b>\n\n"
-            "Bot chưa thể xác minh trạng thái của bạn trong nhóm. "
-            "Hãy thử lại sau.",
-            reply_markup=_join_markup(config.group),
-            parse_mode=ParseMode.HTML,
+        await query.answer(
+            "Chưa thể kiểm tra thành viên lúc này.",
+            show_alert=True,
         )
         return
 
     if not allowed:
-        await query.edit_message_text(
-            _locked_text(),
-            reply_markup=_join_markup(config.group),
-            parse_mode=ParseMode.HTML,
+        await query.answer(
+            "Bạn chưa tham gia nhóm. Hãy vào nhóm rồi thử lại.",
+            show_alert=True,
         )
         return
+
+    await query.answer("Xác minh thành công.")
 
     buttons = []
     if context.bot.username:
