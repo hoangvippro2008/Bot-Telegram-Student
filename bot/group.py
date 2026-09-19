@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from telegram import Bot, ChatMember
 from telegram.constants import ChatMemberStatus
+from telegram.error import TelegramError
 
 from bot.config import GroupConfig
 
@@ -24,6 +25,13 @@ class GroupInfo:
     member_count: int
     bot_status: str
     bot_is_admin: bool
+
+
+@dataclass(frozen=True)
+class GroupCheck:
+    ready: bool
+    info: GroupInfo | None
+    error: str | None
 
 
 def is_active_member(member: ChatMember) -> bool:
@@ -60,3 +68,22 @@ async def read_group_info(bot: Bot, group: GroupConfig) -> GroupInfo:
         bot_is_admin=bot_member.status
         in {ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR},
     )
+
+
+async def check_group(bot: Bot, group: GroupConfig) -> GroupCheck:
+    if not group.enabled:
+        return GroupCheck(ready=True, info=None, error=None)
+
+    try:
+        info = await read_group_info(bot, group)
+    except TelegramError as exc:
+        return GroupCheck(ready=False, info=None, error=str(exc))
+
+    if not info.bot_is_admin:
+        return GroupCheck(
+            ready=False,
+            info=info,
+            error="Bot chưa có quyền quản trị trong nhóm",
+        )
+
+    return GroupCheck(ready=True, info=info, error=None)

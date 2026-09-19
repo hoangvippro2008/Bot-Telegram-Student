@@ -26,6 +26,10 @@ def _is_admin(update: Update, config: Config) -> bool:
     return bool(user and user.id in config.bot.admin_ids)
 
 
+def _group_ready(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    return context.application.bot_data.get("group_ready") is True
+
+
 def _join_markup(group: GroupConfig) -> InlineKeyboardMarkup:
     rows = []
     if group.join_url:
@@ -49,35 +53,38 @@ def _locked_text() -> str:
     )
 
 
+def _unavailable_text() -> str:
+    return (
+        "🛠 <b>HỆ THỐNG XÁC MINH CHƯA SẴN SÀNG</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Bot hiện chưa truy cập được nhóm bắt buộc.\n"
+        "Vui lòng thử lại sau hoặc liên hệ quản trị viên."
+    )
+
+
 async def _send_locked(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    error: bool = False,
 ) -> None:
     config = _config(context)
-    text = _locked_text()
-    if error:
-        text = (
-            "⚠️ <b>CHƯA THỂ KIỂM TRA THÀNH VIÊN</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Bot chưa xác minh được trạng thái trong nhóm. "
-            "Bạn có thể thử lại sau."
-        )
-
-    query = update.callback_query
-    if query is not None:
-        await query.answer()
-        if query.message:
-            await query.message.reply_text(
-                text,
-                reply_markup=_join_markup(config.group),
-                parse_mode=ParseMode.HTML,
-            )
-        return
 
     if update.effective_message:
         await update.effective_message.reply_text(
-            text,
+            _locked_text(),
+            reply_markup=_join_markup(config.group),
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def _send_unavailable(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    config = _config(context)
+
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            _unavailable_text(),
             reply_markup=_join_markup(config.group),
             parse_mode=ParseMode.HTML,
         )
@@ -94,12 +101,16 @@ async def access_guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if query is not None and query.data == "access:check":
         return
 
+    if not _group_ready(context):
+        await _send_unavailable(update, context)
+        raise ApplicationHandlerStop
+
     try:
         if await has_membership(context.bot, config.group, user.id):
             return
     except TelegramError as exc:
-        logger.warning("Không thể kiểm tra thành viên %s: %s", user.id, exc)
-        await _send_locked(update, context, error=True)
+        logger.warning("Lỗi mạng khi kiểm tra thành viên %s: %s", user.id, exc)
+        await _send_unavailable(update, context)
         raise ApplicationHandlerStop
 
     await _send_locked(update, context)
@@ -114,10 +125,21 @@ async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if query is None or user is None:
         return
 
+    if user.id in config.bot.admin_ids:
+        await query.answer("Quản trị viên không cần xác minh.", show_alert=True)
+        return
+
+    if not _group_ready(context):
+        await query.answer(
+            "Nhóm xác minh chưa sẵn sàng. Hãy liên hệ quản trị viên.",
+            show_alert=True,
+        )
+        return
+
     try:
         allowed = await has_membership(context.bot, config.group, user.id)
     except TelegramError as exc:
-        logger.warning("Không thể kiểm tra lại thành viên %s: %s", user.id, exc)
+        logger.warning("Lỗi mạng khi kiểm tra lại thành viên %s: %s", user.id, exc)
         await query.answer(
             "Chưa thể kiểm tra thành viên lúc này.",
             show_alert=True,
