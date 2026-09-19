@@ -51,7 +51,7 @@ async def read_group_info(bot: Bot, group: GroupConfig) -> GroupInfo:
     bot_member = await bot.get_chat_member(group.chat_id, bot.id)
 
     return GroupInfo(
-        title=chat.title or chat.full_name or "Không có tên",
+        title=chat.title or "Không có tên",
         chat_id=chat.id,
         chat_type=chat.type,
         username=chat.username,
