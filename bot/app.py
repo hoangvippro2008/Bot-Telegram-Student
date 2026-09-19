@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 
 from bot.config import Config, load_config
+from bot.group import check_group
 from bot.handlers.access import access_guard, check_access
 from bot.handlers.admin import admin, admin_callback
 from bot.handlers.common import start
@@ -47,6 +48,31 @@ def _logging(level: str) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+async def _check_required_group(application: Application, config: Config) -> None:
+    result = await check_group(application.bot, config.group)
+    application.bot_data["group_ready"] = result.ready
+    application.bot_data["group_error"] = result.error
+
+    if not config.group.enabled:
+        logger.info("Kiểm tra thành viên nhóm đang tắt")
+        return
+
+    if result.ready and result.info:
+        logger.info(
+            "Nhóm bắt buộc hợp lệ: %s (%s) | %s thành viên",
+            result.info.title,
+            result.info.chat_id,
+            result.info.member_count,
+        )
+        return
+
+    logger.error(
+        "Nhóm bắt buộc chưa sẵn sàng: %s | %s",
+        config.group.chat_id,
+        result.error or "Không xác định được lỗi",
+    )
+
+
 async def _post_init(application: Application) -> None:
     member_commands = [BotCommand("start", "Bắt đầu")]
     await application.bot.set_my_commands(member_commands)
@@ -72,6 +98,9 @@ async def _post_init(application: Application) -> None:
 
     bot = await application.bot.get_me()
     logger.info("Bot đã kết nối: @%s (%s)", bot.username or "unknown", bot.id)
+
+    if isinstance(config, Config):
+        await _check_required_group(application, config)
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,6 +139,8 @@ def build(config: Config) -> Application:
     )
 
     application.bot_data["config"] = config
+    application.bot_data["group_ready"] = not config.group.enabled
+    application.bot_data["group_error"] = None
 
     application.add_handler(TypeHandler(Update, access_guard), group=-1)
 
