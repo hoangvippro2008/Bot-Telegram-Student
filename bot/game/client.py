@@ -431,11 +431,17 @@ class GameClient:
         self.protocol.set_key(reader.bytes(size))
         if reader.remaining >= 2:
             try:
-                reader.utf()
-                if reader.remaining >= 4:
-                    reader.i32()
-                if reader.remaining:
-                    reader.u8()
+                secondary_host = reader.utf()
+                secondary_port = reader.i32() if reader.remaining >= 4 else 0
+                secondary_enabled = reader.u8() != 0 if reader.remaining else False
+                logger.info(
+                    "Game handshake: main=%s:%s | secondary=%s:%s | enabled=%s",
+                    self.server.host,
+                    self.server.port,
+                    secondary_host or "-",
+                    secondary_port,
+                    secondary_enabled,
+                )
             except ValueError:
                 pass
         self._handshake.set()
