@@ -441,7 +441,7 @@ class GameClient:
         subcommand = reader.u8()
 
         if subcommand == 4:
-            if reader.remaining < 28:
+            if reader.remaining < 32:
                 return
             self.character.gold = reader.i64()
             self.character.gem = reader.i32()
