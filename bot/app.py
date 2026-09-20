@@ -14,13 +14,17 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     Defaults,
+    MessageHandler,
     TypeHandler,
+    filters,
 )
 
 from bot.config import Config, load_config
+from bot.game.manager import GameManager
 from bot.group import check_group
 from bot.handlers.access import access_guard, check_access
 from bot.handlers.admin import admin, admin_callback
+from bot.handlers.admin_boss import boss_callback, boss_input
 from bot.handlers.common import start
 
 logger = logging.getLogger(__name__)
@@ -103,6 +107,12 @@ async def _post_init(application: Application) -> None:
         await _check_required_group(application, config)
 
 
+async def _post_shutdown(application: Application) -> None:
+    manager = application.bot_data.get("game_manager")
+    if isinstance(manager, GameManager):
+        await manager.close_all()
+
+
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _last_network_error
 
@@ -135,19 +145,23 @@ def build(config: Config) -> Application:
         .get_updates_connect_timeout(config.network.connect_timeout)
         .get_updates_read_timeout(config.network.read_timeout)
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
 
     application.bot_data["config"] = config
     application.bot_data["group_ready"] = not config.group.enabled
     application.bot_data["group_error"] = None
+    application.bot_data["game_manager"] = GameManager()
 
     application.add_handler(TypeHandler(Update, access_guard), group=-1)
 
     application.add_handler(CallbackQueryHandler(check_access, pattern=r"^access:check$"))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CallbackQueryHandler(boss_callback, pattern=r"^boss:"))
     application.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin:"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, boss_input))
 
     application.add_error_handler(_on_error)
     return application
