@@ -92,6 +92,7 @@ class GameClient:
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._login_wait = asyncio.Event()
+        self._login_accepted = asyncio.Event()
         self._login_wait_seconds = 0
         self._write_lock = asyncio.Lock()
         self._received_commands: list[int] = []
@@ -123,6 +124,7 @@ class GameClient:
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._login_wait = asyncio.Event()
+        self._login_accepted = asyncio.Event()
         self._login_wait_seconds = 0
         self._received_commands.clear()
         self._sync_pending.clear()
@@ -277,50 +279,77 @@ class GameClient:
         await self._send(-29, payload)
 
     async def _login_server15(self) -> None:
-        logger.info("Game server 15: dùng luồng bootstrap tương thích 2.5.0")
+        logger.info("Game server 15: dùng state login tương thích 2.5.0")
         await self._send_client_info()
         await asyncio.sleep(2.0)
         await self._send_image_source()
         await asyncio.sleep(1.0)
 
         while True:
+            if self.error:
+                raise RuntimeError(self.error)
+            if self._character_ready.is_set() and self.character.name:
+                return
+            if self._login_accepted.is_set() or self._sync_started:
+                logger.info("Game server 15: đã qua hàng chờ, bắt đầu đồng bộ")
+                return
+
             self._login_wait.clear()
+            self._login_accepted.clear()
             self._login_wait_seconds = 0
             self.status = "Đang đăng nhập"
             await self._send_login()
-            logger.info("Game server 15: đã gửi login")
+            logger.info("Game server 15: đã gửi login trên socket hiện tại")
 
+            wait_task = asyncio.create_task(self._login_wait.wait())
+            accepted_task = asyncio.create_task(self._login_accepted.wait())
+            character_task = asyncio.create_task(self._character_ready.wait())
             try:
-                await asyncio.wait_for(self._login_wait.wait(), timeout=2.0)
-            except TimeoutError:
-                break
+                done, pending = await asyncio.wait(
+                    {wait_task, accepted_task, character_task},
+                    timeout=30.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in (wait_task, accepted_task, character_task):
+                    if not task.done():
+                        task.cancel()
+
+            if self.error:
+                raise RuntimeError(self.error)
+            if not done:
+                raise RuntimeError(
+                    "Máy chủ không phản hồi trạng thái đăng nhập trong 30 giây"
+                )
+
+            if self._character_ready.is_set() and self.character.name:
+                return
+
+            if self._login_accepted.is_set() or self._sync_started:
+                logger.info("Game server 15: server đã chấp nhận đăng nhập")
+                return
+
+            if not self._login_wait.is_set():
+                continue
 
             seconds = max(1, self._login_wait_seconds)
             logger.info(
-                "Game server 15: server yêu cầu chờ %s giây rồi đăng nhập lại",
+                "Game server 15: hàng chờ %s giây, giữ nguyên socket",
                 seconds,
             )
             for remaining in range(seconds, 0, -1):
                 if self.error:
                     raise RuntimeError(self.error)
-                self.status = f"Chờ đăng nhập server {remaining}s"
+                if self._login_accepted.is_set() or self._sync_started:
+                    logger.info(
+                        "Game server 15: được nhận vào sớm khi còn %s giây",
+                        remaining,
+                    )
+                    return
+                self.status = f"Hàng chờ đăng nhập · còn {remaining}s"
                 await asyncio.sleep(1.0)
 
-        if self.error:
-            raise RuntimeError(self.error)
-
-        if self._sync_started:
-            logger.info("Game server 15: server đã bắt đầu đồng bộ")
-            return
-
-        self._sync_started = True
-        self._sync_pending = {"data", "map", "skill", "item"}
-        self.status = "Đang tải dữ liệu game"
-        await self._send(-28, BufferWriter().u8(6).build())
-        await self._send(-28, BufferWriter().u8(7).build())
-        await self._send(-28, BufferWriter().u8(8).build())
-        await self._send(-87, b"")
-        logger.info("Game server 15: đã request Map/Skill/Item/Data")
+            logger.info("Game server 15: hết thời gian chờ, gửi login lại")
 
     async def _send_image_source(self) -> None:
         payload = BufferWriter().i16(0).build()
@@ -434,6 +463,8 @@ class GameClient:
         )
 
         if subcommand == 4:
+            if self._is_server15:
+                self._login_accepted.set()
             await self._start_sync(reader)
             return
 
@@ -522,17 +553,23 @@ class GameClient:
         logger.info("Game login: finishLoadMap (-39) đã gửi")
 
     def _handle_login_wait(self, data: bytes) -> None:
+        if self._sync_started or self._character_ready.is_set():
+            logger.info("Game login queue: bỏ qua cmd 122 sau khi đã qua hàng chờ")
+            return
+
         reader = BufferReader(data)
         if reader.remaining < 2:
+            logger.warning("Game login queue: cmd 122 thiếu thời gian chờ")
             return
 
         seconds = reader.i16()
         if seconds <= 0:
+            logger.info("Game login queue: server trả thời gian chờ %s", seconds)
             return
 
         self._login_wait_seconds = seconds
-        self.status = f"Chờ đăng nhập server {seconds}s"
-        logger.info("Game login queue: chờ %s giây", seconds)
+        self.status = f"Hàng chờ đăng nhập · còn {seconds}s"
+        logger.info("Game login queue: chờ %s giây trên socket hiện tại", seconds)
         self._login_wait.set()
 
     def _handle_dialog(self, data: bytes) -> None:
