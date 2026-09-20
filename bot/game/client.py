@@ -304,16 +304,19 @@ class GameClient:
             wait_task = asyncio.create_task(self._login_wait.wait())
             accepted_task = asyncio.create_task(self._login_accepted.wait())
             character_task = asyncio.create_task(self._character_ready.wait())
+            tasks = {wait_task, accepted_task, character_task}
             try:
                 done, pending = await asyncio.wait(
-                    {wait_task, accepted_task, character_task},
+                    tasks,
                     timeout=30.0,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             finally:
-                for task in (wait_task, accepted_task, character_task):
-                    if not task.done():
-                        task.cancel()
+                pending = {task for task in tasks if not task.done()}
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
             if self.error:
                 raise RuntimeError(self.error)
@@ -464,6 +467,7 @@ class GameClient:
 
         if subcommand == 4:
             if self._is_server15:
+                logger.info("Game server 15: nhận tín hiệu qua hàng chờ (-28/4)")
                 self._login_accepted.set()
             await self._start_sync(reader)
             return
