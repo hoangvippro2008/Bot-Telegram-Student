@@ -93,6 +93,7 @@ def _menu(profile: GameProfile) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🔑 Mật khẩu", callback_data="boss:password"),
             ],
             [InlineKeyboardButton("🌐 Chọn máy chủ", callback_data="boss:servers")],
+            [InlineKeyboardButton("📡 Kiểm tra danh sách máy chủ", callback_data="boss:server_list:0")],
             [InlineKeyboardButton(connect_label, callback_data=connect_data)],
             [InlineKeyboardButton("📋 Thông tin nhân vật", callback_data="boss:character")],
             [InlineKeyboardButton("🔎 Kiểm tra thông báo Boss", callback_data="boss:check")],
@@ -207,7 +208,6 @@ def _server_menu(
     selected: GameServer | None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    current: list[InlineKeyboardButton] = []
     for server in servers:
         marker = (
             "✅ "
@@ -217,18 +217,100 @@ def _server_menu(
             else ""
         )
         new = "🆕 " if server.is_new else ""
-        current.append(
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{marker}{_server_icon(server)} {new}{server.name} · "
+                    f"{server.host}:{server.port}",
+                    callback_data=f"boss:server:{_server_token(server)}",
+                )
+            ]
+        )
+
+    rows.append(
+        [
             InlineKeyboardButton(
-                f"{marker}{_server_icon(server)} {new}{server.name}",
-                callback_data=f"boss:server:{_server_token(server)}",
+                "📡 Kiểm tra danh sách máy chủ",
+                callback_data="boss:server_list:0",
+            )
+        ]
+    )
+    rows.append([InlineKeyboardButton("🔄 Tải lại", callback_data="boss:servers")])
+    rows.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+_SERVER_PAGE_SIZE = 12
+
+
+def _server_list_text(
+    servers: tuple[GameServer, ...],
+    selected: GameServer | None,
+    page: int,
+) -> str:
+    total_pages = max(1, (len(servers) + _SERVER_PAGE_SIZE - 1) // _SERVER_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * _SERVER_PAGE_SIZE
+    end = min(start + _SERVER_PAGE_SIZE, len(servers))
+
+    lines = [
+        "📡 <b>DANH SÁCH MÁY CHỦ</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"Trang <b>{page + 1}/{total_pages}</b> · Tổng <b>{len(servers)}</b> máy chủ",
+        "",
+    ]
+
+    for server in servers[start:end]:
+        selected_mark = (
+            "✅"
+            if selected
+            and selected.host == server.host
+            and selected.port == server.port
+            else "▫️"
+        )
+        new = " 🆕" if server.is_new else ""
+        lines.append(
+            f"{selected_mark} <b>{_safe(server.name)}</b>{new}\n"
+            f"└ <code>{_safe(server.host)}:{server.port}</code>"
+        )
+
+    lines.extend(
+        [
+            "",
+            "Nguồn: <code>server_extra.php</code>",
+            "✅ là máy chủ đang được chọn để kết nối.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _server_list_menu(page: int, total: int) -> InlineKeyboardMarkup:
+    total_pages = max(1, (total + _SERVER_PAGE_SIZE - 1) // _SERVER_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    nav: list[InlineKeyboardButton] = []
+
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                "⬅️ Trang trước",
+                callback_data=f"boss:server_list:{page - 1}",
             )
         )
-        if len(current) == 2:
-            rows.append(current)
-            current = []
-    if current:
-        rows.append(current)
-    rows.append([InlineKeyboardButton("🔄 Tải lại", callback_data="boss:servers")])
+    if page + 1 < total_pages:
+        nav.append(
+            InlineKeyboardButton(
+                "Trang sau ➡️",
+                callback_data=f"boss:server_list:{page + 1}",
+            )
+        )
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [InlineKeyboardButton("🔄 Làm mới", callback_data=f"boss:server_list:{page}")]
+    )
+    rows.append([InlineKeyboardButton("🌐 Chọn máy chủ", callback_data="boss:servers")])
     rows.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -305,7 +387,8 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             servers = await list_servers()
         except Exception as exc:
-            await _edit(query, 
+            await _edit(
+                query,
                 "❌ <b>KHÔNG LẤY ĐƯỢC MÁY CHỦ</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"<code>{_safe(exc)}</code>\n\n"
@@ -323,13 +406,70 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         profile.server_options = {
             _server_token(server): server for server in servers
         }
-        await _edit(query, 
+
+        selected_text = "Chưa chọn"
+        if profile.server:
+            selected_text = (
+                f"{_safe(profile.server.name)} · "
+                f"<code>{_safe(profile.server.host)}:{profile.server.port}</code>"
+            )
+
+        await _edit(
+            query,
             "🌐 <b>CHỌN MÁY CHỦ</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"Đã tải <b>{len(servers)}</b> máy chủ từ "
-            "<code>server_extra.php</code>.\n\n"
-            "Chọn máy chủ muốn kết nối:",
+            f"Đã tải <b>{len(servers)}</b> máy chủ trực tiếp từ "
+            "<code>server_extra.php</code>.\n"
+            f"🎯 <b>Đang chọn:</b> {selected_text}\n\n"
+            "Mỗi nút bên dưới hiển thị đúng <b>Tên · host:port</b>:",
             reply_markup=_server_menu(servers, profile.server),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if data.startswith("boss:server_list:"):
+        await _answer(query, "Đang kiểm tra danh sách...")
+        try:
+            page = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            page = 0
+
+        try:
+            servers = await list_servers()
+        except Exception as exc:
+            await _edit(
+                query,
+                "❌ <b>KHÔNG KIỂM TRA ĐƯỢC MÁY CHỦ</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"<code>{_safe(exc)}</code>",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔄 Thử lại",
+                                callback_data="boss:server_list:0",
+                            )
+                        ],
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")],
+                    ]
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        profile.server_options = {
+            _server_token(server): server for server in servers
+        }
+        total_pages = max(
+            1,
+            (len(servers) + _SERVER_PAGE_SIZE - 1) // _SERVER_PAGE_SIZE,
+        )
+        page = max(0, min(page, total_pages - 1))
+
+        await _edit(
+            query,
+            _server_list_text(servers, profile.server, page),
+            reply_markup=_server_list_menu(page, len(servers)),
             parse_mode=ParseMode.HTML,
         )
         return
