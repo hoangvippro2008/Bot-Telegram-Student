@@ -304,6 +304,9 @@ class GameClient:
         if packet.command == -87:
             await self._complete_sync_part("data", len(packet.data))
             return
+        if packet.command == 12:
+            await self._complete_sync_part("item", len(packet.data))
+            return
         if packet.command == -28:
             await self._handle_not_map(packet.data)
             return
@@ -361,8 +364,6 @@ class GameClient:
                 part,
                 reader.remaining,
             )
-            if part == 1:
-                await self._complete_sync_part("item", len(data))
             return
 
     async def _start_sync(self, reader: BufferReader) -> None:
