@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -34,6 +35,11 @@ def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 def _safe(value: object) -> str:
     return html.escape(str(value))
+
+
+def _server_token(server: GameServer) -> str:
+    raw = f"{server.name}\0{server.host}\0{server.port}".encode("utf-8")
+    return hashlib.blake2s(raw, digest_size=8).hexdigest()
 
 
 async def _answer(query, text: str | None = None, show_alert: bool = False) -> bool:
@@ -107,6 +113,11 @@ def _boss_text(profile: GameProfile) -> str:
     account = _safe(profile.account) if profile.account else "Chưa cấu hình"
     password = "Đã cấu hình" if profile.password_set else "Chưa cấu hình"
     server = _safe(profile.server.name) if profile.server else "Chưa chọn"
+    endpoint = (
+        f"<code>{_safe(profile.server.host)}:{profile.server.port}</code>"
+        if profile.server
+        else "Chưa chọn"
+    )
 
     return (
         "🔔 <b>QUẢN LÝ THÔNG BÁO BOSS</b>\n"
@@ -114,7 +125,8 @@ def _boss_text(profile: GameProfile) -> str:
         f"🔌 <b>Trạng thái:</b> {status}\n"
         f"👤 <b>Tài khoản:</b> <code>{account}</code>\n"
         f"🔑 <b>Mật khẩu:</b> {password}\n"
-        f"🌐 <b>Máy chủ:</b> {server}\n\n"
+        f"🌐 <b>Máy chủ:</b> {server}\n"
+        f"📡 <b>Đích:</b> {endpoint}\n\n"
         "Tài khoản và mật khẩu chỉ giữ trong bộ nhớ khi bot đang chạy."
     )
 
@@ -208,7 +220,7 @@ def _server_menu(
         current.append(
             InlineKeyboardButton(
                 f"{marker}{_server_icon(server)} {new}{server.name}",
-                callback_data=f"boss:server:{server.id}",
+                callback_data=f"boss:server:{_server_token(server)}",
             )
         )
         if len(current) == 2:
@@ -308,8 +320,8 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        context.application.bot_data["game_servers"] = {
-            server.id: server for server in servers
+        profile.server_options = {
+            _server_token(server): server for server in servers
         }
         await _edit(query, 
             "🌐 <b>CHỌN MÁY CHỦ</b>\n"
@@ -323,14 +335,9 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data.startswith("boss:server:"):
-        try:
-            server_id = int(data.rsplit(":", 1)[1])
-        except ValueError:
-            await _answer(query, "Máy chủ không hợp lệ", show_alert=True)
-            return
+        token = data.rsplit(":", 1)[1]
+        server = profile.server_options.get(token)
 
-        servers = context.application.bot_data.get("game_servers", {})
-        server = servers.get(server_id) if isinstance(servers, dict) else None
         if not isinstance(server, GameServer):
             try:
                 fresh = await list_servers()
@@ -341,16 +348,25 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     show_alert=True,
                 )
                 return
-            context.application.bot_data["game_servers"] = {
-                item.id: item for item in fresh
+
+            profile.server_options = {
+                _server_token(item): item for item in fresh
             }
-            server = next((item for item in fresh if item.id == server_id), None)
-        if server is None:
-            await _answer(query, "Không tìm thấy máy chủ", show_alert=True)
+            server = profile.server_options.get(token)
+
+        if not isinstance(server, GameServer):
+            await _answer(
+                query,
+                "Danh sách máy chủ đã thay đổi. Hãy mở Chọn máy chủ và chọn lại.",
+                show_alert=True,
+            )
             return
 
         profile.server = server
-        await _answer(query, f"Đã chọn {server.name}")
+        await _answer(
+            query,
+            f"Đã chọn {server.name} ({server.host}:{server.port})",
+        )
         await _edit(query, 
             _boss_text(profile),
             reply_markup=_menu(profile),
