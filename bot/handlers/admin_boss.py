@@ -51,6 +51,25 @@ async def _answer(query, text: str | None = None, show_alert: bool = False) -> b
         raise
 
 
+async def _edit(
+    query,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = ParseMode.HTML,
+) -> bool:
+    try:
+        await _edit(query, 
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+        return True
+    except BadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return False
+        raise
+
+
 def _num(value: int | None) -> str:
     if value is None:
         return "Chưa nhận"
@@ -222,7 +241,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:menu":
         profile.input_mode = None
         await _answer(query)
-        await query.edit_message_text(
+        await _edit(query, 
             _boss_text(profile),
             reply_markup=_menu(profile),
             parse_mode=ParseMode.HTML,
@@ -232,7 +251,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:account":
         profile.input_mode = "account"
         await _answer(query)
-        await query.edit_message_text(
+        await _edit(query, 
             "👤 <b>CẤU HÌNH TÀI KHOẢN</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Gửi tên tài khoản game vào khung chat.",
@@ -244,7 +263,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:password":
         profile.input_mode = "password"
         await _answer(query)
-        await query.edit_message_text(
+        await _edit(query, 
             "🔑 <b>CẤU HÌNH MẬT KHẨU</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Gửi mật khẩu game vào khung chat.\n\n"
@@ -258,7 +277,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:cancel_input":
         profile.input_mode = None
         await _answer(query, "Đã hủy")
-        await query.edit_message_text(
+        await _edit(query, 
             _boss_text(profile),
             reply_markup=_menu(profile),
             parse_mode=ParseMode.HTML,
@@ -270,7 +289,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             servers = await list_servers()
         except Exception as exc:
-            await query.edit_message_text(
+            await _edit(query, 
                 "❌ <b>KHÔNG LẤY ĐƯỢC MÁY CHỦ</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"<code>{_safe(exc)}</code>\n\n"
@@ -288,7 +307,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.application.bot_data["game_servers"] = {
             server.id: server for server in servers
         }
-        await query.edit_message_text(
+        await _edit(query, 
             "🌐 <b>CHỌN MÁY CHỦ</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"Đã tải <b>{len(servers)}</b> máy chủ từ "
@@ -328,7 +347,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         profile.server = server
         await _answer(query, f"Đã chọn {server.name}")
-        await query.edit_message_text(
+        await _edit(query, 
             _boss_text(profile),
             reply_markup=_menu(profile),
             parse_mode=ParseMode.HTML,
@@ -338,7 +357,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:connect":
         profile.input_mode = None
         await _answer(query, "Đang kết nối...")
-        await query.edit_message_text(
+        await _edit(query, 
             "⏳ <b>ĐANG KẾT NỐI GAME</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Đang bắt tay TCP, đăng nhập và lấy dữ liệu nhân vật...",
@@ -347,7 +366,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             await manager.connect(user.id)
         except Exception as exc:
-            await query.edit_message_text(
+            await _edit(query, 
                 "❌ <b>KẾT NỐI THẤT BẠI</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"<code>{_safe(exc)}</code>",
@@ -358,7 +377,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        await query.edit_message_text(
+        await _edit(query, 
             "✅ <b>KẾT NỐI THÀNH CÔNG</b>\n\n" + _character_text(profile),
             reply_markup=_character_menu(),
             parse_mode=ParseMode.HTML,
@@ -368,7 +387,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data == "boss:disconnect":
         await _answer(query, "Đang ngắt kết nối...")
         await manager.disconnect(user.id)
-        await query.edit_message_text(
+        await _edit(query, 
             _boss_text(profile),
             reply_markup=_menu(profile),
             parse_mode=ParseMode.HTML,
@@ -377,7 +396,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:character":
         await _answer(query)
-        await query.edit_message_text(
+        await _edit(query, 
             _character_text(profile),
             reply_markup=_character_menu(),
             parse_mode=ParseMode.HTML,
