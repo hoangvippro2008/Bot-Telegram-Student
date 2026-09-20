@@ -18,6 +18,7 @@ from bot.system import format_duration
 
 logger = logging.getLogger(__name__)
 _AUTO_CONNECT_DELAY = 5.0
+_AUTO_REPORT_INTERVAL = 3.0
 
 
 def _config(context: ContextTypes.DEFAULT_TYPE) -> Config:
@@ -200,6 +201,63 @@ def _character_text(profile: GameProfile) -> str:
     )
 
 
+def _auto_connect_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⏹ Dừng tự kết nối",
+                    callback_data="boss:disconnect",
+                )
+            ],
+            [InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")],
+        ]
+    )
+
+
+def _auto_connect_text(
+    profile: GameProfile,
+    state: str,
+    error: str | None = None,
+) -> str:
+    server = profile.server
+    if server is None:
+        return "Auto connect chưa có máy chủ."
+
+    text = (
+        "🔄 <b>AUTO CONNECT ĐANG CHẠY</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 <b>Máy chủ:</b> {_safe(server.name)}\n"
+        f"📡 <b>Đích:</b> <code>{_safe(server.host)}:{server.port}</code>\n"
+        f"🔁 <b>Lần thử:</b> <code>{max(1, profile.auto_attempts)}</code>\n"
+        f"📍 <b>Trạng thái:</b> {state}"
+    )
+    if error:
+        text += f"\n⚠️ <b>Lỗi:</b> <code>{_safe(error)}</code>"
+    return text
+
+
+async def _update_auto_connect_message(
+    application,
+    chat_id: int,
+    message_id: int,
+    text: str,
+) -> None:
+    try:
+        await application.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=_auto_connect_menu(),
+            parse_mode=ParseMode.HTML,
+        )
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logger.warning("Không cập nhật được trạng thái auto connect: %s", exc)
+    except TelegramError as exc:
+        logger.warning("Không cập nhật được trạng thái auto connect: %s", exc)
+
+
 async def _auto_connect(
     application,
     manager: GameManager,
@@ -211,9 +269,50 @@ async def _auto_connect(
     try:
         while True:
             profile.auto_attempts += 1
+            profile.last_connect_error = None
+
+            await _update_auto_connect_message(
+                application,
+                chat_id,
+                status_message_id,
+                _auto_connect_text(
+                    profile,
+                    "🟡 Đang kết nối...",
+                ),
+            )
+
+            connect_task = asyncio.create_task(manager.connect(user_id))
             try:
-                await manager.connect(user_id)
+                while not connect_task.done():
+                    done, _ = await asyncio.wait(
+                        {connect_task},
+                        timeout=_AUTO_REPORT_INTERVAL,
+                    )
+                    if done:
+                        break
+
+                    client = profile.client
+                    phase = client.status if client else "Đang kết nối"
+                    await _update_auto_connect_message(
+                        application,
+                        chat_id,
+                        status_message_id,
+                        _auto_connect_text(
+                            profile,
+                            f"🟡 {phase}",
+                        ),
+                    )
+
+                await connect_task
             except asyncio.CancelledError:
+                if not connect_task.done():
+                    connect_task.cancel()
+                    try:
+                        await connect_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
                 raise
             except Exception as exc:
                 profile.last_connect_error = str(exc)
@@ -222,6 +321,18 @@ async def _auto_connect(
                     profile.auto_attempts,
                     exc,
                 )
+
+                await _update_auto_connect_message(
+                    application,
+                    chat_id,
+                    status_message_id,
+                    _auto_connect_text(
+                        profile,
+                        f"🔴 Thất bại · thử lại sau {int(_AUTO_CONNECT_DELAY)} giây",
+                        profile.last_connect_error,
+                    ),
+                )
+
                 await asyncio.sleep(_AUTO_CONNECT_DELAY)
                 continue
 
@@ -628,23 +739,15 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _answer(query, "Đã bật tự động kết nối")
         await _edit(
             query,
-            "🔄 <b>AUTO CONNECT ĐANG CHẠY</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"🌐 <b>Máy chủ:</b> {_safe(profile.server.name)}\n"
-            f"📡 <b>Đích:</b> <code>{_safe(profile.server.host)}:{profile.server.port}</code>\n\n"
-            "Bot sẽ tự thử lại mỗi <b>5 giây</b> sau mỗi lần thất bại "
-            "và chỉ dừng khi vào được nhân vật hoặc bạn bấm Dừng.",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⏹ Dừng tự kết nối",
-                            callback_data="boss:disconnect",
-                        )
-                    ],
-                    [InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")],
-                ]
+            (
+                "🔄 <b>AUTO CONNECT ĐANG CHẠY</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 <b>Máy chủ:</b> {_safe(profile.server.name)}\n"
+                f"📡 <b>Đích:</b> <code>{_safe(profile.server.host)}:{profile.server.port}</code>\n"
+                "🔁 <b>Lần thử:</b> <code>0</code>\n"
+                "📍 <b>Trạng thái:</b> Đang khởi động..."
             ),
+            reply_markup=_auto_connect_menu(),
             parse_mode=ParseMode.HTML,
         )
 
