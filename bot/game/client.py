@@ -351,6 +351,12 @@ class GameClient:
         if packet.command == -27:
             self._handle_key(packet.data)
             return
+        if packet.command == -26:
+            self._handle_dialog(packet.data)
+            return
+        if packet.command in {-25, 94}:
+            self._handle_server_notice(packet.command, packet.data)
+            return
         if packet.command == 2:
             self.error = (
                 f"Máy chủ {self.server.name} báo tài khoản chưa có nhân vật "
@@ -505,6 +511,31 @@ class GameClient:
             return
         await self._send(-39, b"")
         logger.info("Game login: finishLoadMap (-39) đã gửi")
+
+    def _handle_dialog(self, data: bytes) -> None:
+        reader = BufferReader(data)
+        try:
+            message = reader.utf().strip()
+        except ValueError:
+            message = "Máy chủ trả dialog đăng nhập không hợp lệ"
+
+        if not message:
+            message = "Máy chủ từ chối đăng nhập"
+
+        logger.info("Game dialog: %s", message)
+        self.error = message
+        self.status = "Đăng nhập bị từ chối"
+        self._character_ready.set()
+
+    def _handle_server_notice(self, command: int, data: bytes) -> None:
+        reader = BufferReader(data)
+        try:
+            message = reader.utf().strip()
+        except ValueError:
+            return
+
+        if message:
+            logger.info("Game notice cmd=%s: %s", command, message)
 
     def _handle_key(self, data: bytes) -> None:
         reader = BufferReader(data)
