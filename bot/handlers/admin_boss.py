@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
+import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ParseMode
@@ -12,6 +14,10 @@ from bot.config import Config
 from bot.game.manager import GameManager, GameProfile
 from bot.game.server import GameServer, list_servers
 from bot.system import format_duration
+
+
+logger = logging.getLogger(__name__)
+_AUTO_CONNECT_DELAY = 5.0
 
 
 def _config(context: ContextTypes.DEFAULT_TYPE) -> Config:
@@ -84,8 +90,16 @@ def _num(value: int | None) -> str:
 
 def _menu(profile: GameProfile) -> InlineKeyboardMarkup:
     connected = bool(profile.client and profile.client.connected)
-    connect_label = "⛔ Ngắt kết nối" if connected else "🔌 Kết nối máy chủ"
-    connect_data = "boss:disconnect" if connected else "boss:connect"
+    retrying = bool(profile.retry_task and not profile.retry_task.done())
+    if connected:
+        connect_label = "⛔ Ngắt kết nối"
+        connect_data = "boss:disconnect"
+    elif retrying:
+        connect_label = "⏹ Dừng tự kết nối"
+        connect_data = "boss:disconnect"
+    else:
+        connect_label = "🔌 Kết nối máy chủ"
+        connect_data = "boss:connect"
     return InlineKeyboardMarkup(
         [
             [
@@ -104,8 +118,11 @@ def _menu(profile: GameProfile) -> InlineKeyboardMarkup:
 
 def _boss_text(profile: GameProfile) -> str:
     client = profile.client
+    retrying = bool(profile.retry_task and not profile.retry_task.done())
     if client and client.connected:
         status = "🟢 Đã kết nối"
+    elif retrying:
+        status = f"🟡 Đang tự kết nối · lần {max(1, profile.auto_attempts)}"
     elif client and client.error:
         status = f"🔴 {client.status}"
     else:
@@ -120,6 +137,10 @@ def _boss_text(profile: GameProfile) -> str:
         else "Chưa chọn"
     )
 
+    last_error = ""
+    if retrying and profile.last_connect_error:
+        last_error = f"\n⚠️ <b>Lỗi gần nhất:</b> <code>{_safe(profile.last_connect_error)}</code>"
+
     return (
         "🔔 <b>QUẢN LÝ THÔNG BÁO BOSS</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -127,7 +148,8 @@ def _boss_text(profile: GameProfile) -> str:
         f"👤 <b>Tài khoản:</b> <code>{account}</code>\n"
         f"🔑 <b>Mật khẩu:</b> {password}\n"
         f"🌐 <b>Máy chủ:</b> {server}\n"
-        f"📡 <b>Đích:</b> {endpoint}\n\n"
+        f"📡 <b>Đích:</b> {endpoint}"
+        f"{last_error}\n\n"
         "Tài khoản và mật khẩu chỉ giữ trong bộ nhớ khi bot đang chạy."
     )
 
@@ -176,6 +198,75 @@ def _character_text(profile: GameProfile) -> str:
         f"🔴 Ngọc khóa: <code>{_num(char.locked_gem)}</code>\n\n"
         f"{task_text}"
     )
+
+
+async def _auto_connect(
+    application,
+    manager: GameManager,
+    user_id: int,
+    chat_id: int,
+    status_message_id: int,
+) -> None:
+    profile = manager.get(user_id)
+    try:
+        while True:
+            profile.auto_attempts += 1
+            try:
+                await manager.connect(user_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                profile.last_connect_error = str(exc)
+                logger.info(
+                    "Auto connect game lần %s thất bại: %s",
+                    profile.auto_attempts,
+                    exc,
+                )
+                await asyncio.sleep(_AUTO_CONNECT_DELAY)
+                continue
+
+            profile.last_connect_error = None
+            logger.info(
+                "Auto connect game thành công sau %s lần thử",
+                profile.auto_attempts,
+            )
+
+            success_text = (
+                "✅ <b>AUTO CONNECT THÀNH CÔNG</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"Đã vào được <b>{_safe(profile.server.name)}</b> sau "
+                f"<b>{profile.auto_attempts}</b> lần thử.\n\n"
+                + _character_text(profile)
+            )
+
+            try:
+                await application.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    text=success_text,
+                    reply_markup=_character_menu(),
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramError:
+                pass
+
+            try:
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✅ <b>ĐÃ KẾT NỐI GAME</b>\n"
+                        f"Máy chủ: <b>{_safe(profile.server.name)}</b>\n"
+                        f"Nhân vật: <b>{_safe(profile.client.character.name)}</b>"
+                    ),
+                    reply_markup=_character_menu(),
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramError as exc:
+                logger.warning("Không gửi được thông báo auto connect: %s", exc)
+            return
+    finally:
+        if profile.retry_task is asyncio.current_task():
+            profile.retry_task = None
 
 
 def _character_menu() -> InlineKeyboardMarkup:
@@ -515,36 +606,65 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:connect":
         profile.input_mode = None
-        await _answer(query, "Đang kết nối...")
-        await _edit(query, 
-            "⏳ <b>ĐANG KẾT NỐI GAME</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Đang bắt tay TCP, đăng nhập và lấy dữ liệu nhân vật...",
-            parse_mode=ParseMode.HTML,
-        )
-        try:
-            await manager.connect(user.id)
-        except Exception as exc:
-            await _edit(query, 
-                "❌ <b>KẾT NỐI THẤT BẠI</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"<code>{_safe(exc)}</code>",
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")]]
-                ),
-                parse_mode=ParseMode.HTML,
-            )
+
+        if not profile.account:
+            await _answer(query, "Chưa nhập tài khoản", show_alert=True)
+            return
+        if not profile.password:
+            await _answer(query, "Chưa nhập mật khẩu", show_alert=True)
+            return
+        if not profile.server:
+            await _answer(query, "Chưa chọn máy chủ", show_alert=True)
+            return
+        if profile.client and profile.client.connected:
+            await _answer(query, "Game đang kết nối rồi", show_alert=True)
+            return
+        if profile.retry_task and not profile.retry_task.done():
+            await _answer(query, "Auto connect đang chạy", show_alert=True)
             return
 
-        await _edit(query, 
-            "✅ <b>KẾT NỐI THÀNH CÔNG</b>\n\n" + _character_text(profile),
-            reply_markup=_character_menu(),
+        profile.auto_attempts = 0
+        profile.last_connect_error = None
+        await _answer(query, "Đã bật tự động kết nối")
+        await _edit(
+            query,
+            "🔄 <b>AUTO CONNECT ĐANG CHẠY</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🌐 <b>Máy chủ:</b> {_safe(profile.server.name)}\n"
+            f"📡 <b>Đích:</b> <code>{_safe(profile.server.host)}:{profile.server.port}</code>\n\n"
+            "Bot sẽ tự thử lại mỗi <b>5 giây</b> sau mỗi lần thất bại "
+            "và chỉ dừng khi vào được nhân vật hoặc bạn bấm Dừng.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⏹ Dừng tự kết nối",
+                            callback_data="boss:disconnect",
+                        )
+                    ],
+                    [InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")],
+                ]
+            ),
             parse_mode=ParseMode.HTML,
+        )
+
+        profile.retry_task = asyncio.create_task(
+            _auto_connect(
+                context.application,
+                manager,
+                user.id,
+                update.effective_chat.id,
+                query.message.message_id,
+            )
         )
         return
 
     if data == "boss:disconnect":
-        await _answer(query, "Đang ngắt kết nối...")
+        retrying = bool(profile.retry_task and not profile.retry_task.done())
+        await _answer(
+            query,
+            "Đang dừng tự kết nối..." if retrying else "Đang ngắt kết nối...",
+        )
         await manager.disconnect(user.id)
         await _edit(query, 
             _boss_text(profile),
