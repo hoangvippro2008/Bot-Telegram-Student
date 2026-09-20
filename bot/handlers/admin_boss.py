@@ -130,7 +130,11 @@ def _character_text(profile: GameProfile) -> str:
 
     char = client.character
     task = char.task
-    task_text = "Chưa nhận dữ liệu nhiệm vụ"
+    task_text = (
+        f"📌 <b>Nhiệm vụ:</b> {_safe(char.mission_notice)}"
+        if char.mission_notice
+        else "Chưa nhận dữ liệu nhiệm vụ"
+    )
     if task:
         current = task.current_name or task.name
         progress = _num(task.count)
