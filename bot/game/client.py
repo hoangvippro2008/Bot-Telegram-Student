@@ -96,7 +96,10 @@ class GameClient:
         self._task_ready = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._received_commands: list[int] = []
-        self._finish_update_sent = False
+        self._sync_pending: set[str] = set()
+        self._sync_started = False
+        self._sync_finished = False
+        self._server_versions: tuple[int, int, int, int] | None = None
 
     @property
     def connected(self) -> bool:
@@ -119,7 +122,10 @@ class GameClient:
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._received_commands.clear()
-        self._finish_update_sent = False
+        self._sync_pending.clear()
+        self._sync_started = False
+        self._sync_finished = False
+        self._server_versions = None
         self.status = "Đang kết nối"
 
         try:
@@ -138,8 +144,8 @@ class GameClient:
             await self._send_login()
             await self._wait(
                 self._characters,
-                15.0,
-                "Không nhận được PlayerData sau đăng nhập",
+                30.0,
+                "Không nhận được PlayerData sau khi đồng bộ dữ liệu",
             )
 
             if not self.characters:
@@ -287,6 +293,17 @@ class GameClient:
         if packet.command == 0:
             self._handle_character_list(packet.data)
             return
+        if packet.command == 2:
+            self.error = (
+                f"Máy chủ {self.server.name} báo tài khoản chưa có nhân vật "
+                "(cmd 2 / CREATE_CHAR)"
+            )
+            self._characters.set()
+            self._character_ready.set()
+            return
+        if packet.command == -87:
+            await self._complete_sync_part("data", len(packet.data))
+            return
         if packet.command == -28:
             await self._handle_not_map(packet.data)
             return
@@ -320,13 +337,85 @@ class GameClient:
             len(data),
         )
 
-        if subcommand != 4 or self._finish_update_sent:
+        if subcommand == 4:
+            await self._start_sync(reader)
             return
 
-        self._finish_update_sent = True
-        self.status = "Đang hoàn tất cập nhật"
-        logger.info("Game login: nhận -28/4, gửi -38 hoàn tất cập nhật")
+        if subcommand == 6:
+            await self._complete_sync_part("map", reader.remaining)
+            return
+
+        if subcommand == 7:
+            await self._complete_sync_part("skill", reader.remaining)
+            return
+
+        if subcommand == 8:
+            if reader.remaining < 2:
+                logger.warning("Game sync: packet item thiếu version/part")
+                return
+            version = reader.u8()
+            part = reader.u8()
+            logger.info(
+                "Game sync: nhận Item version=%s part=%s size=%s",
+                version,
+                part,
+                reader.remaining,
+            )
+            if part == 1:
+                await self._complete_sync_part("item", len(data))
+            return
+
+    async def _start_sync(self, reader: BufferReader) -> None:
+        if self._sync_started:
+            return
+        if reader.remaining < 5:
+            raise ValueError("Packet -28/4 thiếu version Data/Map/Skill/Item")
+
+        vs_data = reader.u8()
+        vs_map = reader.u8()
+        vs_skill = reader.u8()
+        vs_item = reader.u8()
+        extra = reader.u8()
+        self._server_versions = (vs_data, vs_map, vs_skill, vs_item)
+        self._sync_started = True
+        self._sync_pending = {"data", "map", "skill", "item"}
+        self.status = "Đang tải dữ liệu game"
+
+        logger.info(
+            "Game sync: server versions data=%s map=%s skill=%s item=%s extra=%s",
+            vs_data,
+            vs_map,
+            vs_skill,
+            vs_item,
+            extra,
+        )
+
+        await self._send(-87, b"")
+        await self._send(-28, BufferWriter().u8(6).build())
+        await self._send(-28, BufferWriter().u8(7).build())
+        await self._send(-28, BufferWriter().u8(8).build())
+        logger.info("Game sync: đã request Data/Map/Skill/Item")
+
+    async def _complete_sync_part(self, part: str, size: int) -> None:
+        if not self._sync_started or part not in self._sync_pending:
+            return
+
+        self._sync_pending.remove(part)
+        logger.info(
+            "Game sync: xong %s (%s bytes), còn %s",
+            part,
+            size,
+            ", ".join(sorted(self._sync_pending)) or "0",
+        )
+
+        if self._sync_pending or self._sync_finished:
+            return
+
+        self._sync_finished = True
+        self.status = "Đang hoàn tất đồng bộ"
+        await self._send(-28, BufferWriter().u8(13).build())
         await self._send(-38, b"")
+        logger.info("Game sync: clientOk + finishUpdate đã gửi")
 
     def _handle_key(self, data: bytes) -> None:
         reader = BufferReader(data)
