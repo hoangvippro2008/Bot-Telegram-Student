@@ -1,12 +1,33 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from urllib.request import Request, urlopen
 
 
-EXTRA_URL = "http://112.213.94.23/mod/server_extra.php"
-_MAX_RESPONSE = 256 * 1024
+SERVER_LIST = (
+    "Vũ trụ 1:dragon1.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 2:dragon2.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 3:dragon3.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 4:dragon4.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 5:dragon5.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 6:dragon6.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 7:dragon7.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 8:dragon10.teamobi.com:14446:0:0:0,"
+    "Vũ trụ 9:dragon10.teamobi.com:14447:0:0:0,"
+    "Vũ trụ 10:dragon10.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 11:dragon11.teamobi.com:14445:0:0:0,"
+    "Vũ trụ 12:dragon12.teamobi.com:14445:0:0:0,"
+    "Võ đài liên vũ trụ:dragonwar.teamobi.com:20000:0:0:0,"
+    "Universe 1:dragon.indonaga.com:14445:1:0:0,"
+    "Naga:dragon.indonaga.com:14446:2:0:0,"
+    "Super 1:dragon11.teamobi.com:14446:0:1:0,"
+    "Super 2:dragonsuper.teamobi.com:17001:0:1:0,"
+    "Vũ trụ 13:dragon13.teamobi.com:14446:0:0:0,"
+    "VIP 2:dragon11.teamobi.com:18001:0:0:0,"
+    "Vũ trụ 14:dragon14.teamobi.com:18001:0:0:0,"
+    "Vũ trụ 15:dragon15.teamobi.com:14445:0:0:1,"
+    "Super 3:dragonsuper3.teamobi.com:17001:0:1:1,"
+    "0,0"
+)
 
 
 @dataclass(frozen=True)
@@ -20,19 +41,10 @@ class GameServer:
     is_new: bool
 
 
-def _decode(raw: bytes) -> str:
-    for encoding in ("utf-8-sig", "cp1258", "latin-1"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise ValueError("Không đọc được nội dung server_extra.php")
-
-
 def parse_server_list(text: str) -> tuple[GameServer, ...]:
     value = text.replace("\x00", "").strip()
     if not value:
-        raise ValueError("server_extra.php trả dữ liệu rỗng")
+        raise ValueError("Danh sách máy chủ rỗng")
 
     parts = [part.strip() for part in value.split(",")]
     while parts and not parts[-1]:
@@ -42,7 +54,11 @@ def parse_server_list(text: str) -> tuple[GameServer, ...]:
         raise ValueError("Danh sách máy chủ không đúng định dạng")
 
     entries = parts
-    if len(parts) >= 2 and parts[-1].lstrip("-").isdigit() and parts[-2].lstrip("-").isdigit():
+    if (
+        len(parts) >= 2
+        and parts[-1].lstrip("-").isdigit()
+        and parts[-2].lstrip("-").isdigit()
+    ):
         entries = parts[:-2]
 
     servers: list[GameServer] = []
@@ -83,32 +99,11 @@ def parse_server_list(text: str) -> tuple[GameServer, ...]:
         )
 
     if not servers:
-        raise ValueError("Không tìm thấy máy chủ hợp lệ trong server_extra.php")
+        raise ValueError("Không tìm thấy máy chủ hợp lệ")
 
     return tuple(servers)
 
 
-def _download_server_list(timeout: float) -> str:
-    request = Request(
-        EXTRA_URL,
-        headers={
-            "User-Agent": "NRO-PC/2.5.0",
-            "Accept": "text/plain,*/*",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with urlopen(request, timeout=timeout) as response:
-        raw = response.read(_MAX_RESPONSE + 1)
-
-    if len(raw) > _MAX_RESPONSE:
-        raise ValueError("Danh sách máy chủ vượt giới hạn cho phép")
-
-    return _decode(raw)
-
-
 async def list_servers(timeout: float = 6.0) -> tuple[GameServer, ...]:
-    try:
-        text = await asyncio.to_thread(_download_server_list, timeout)
-        return parse_server_list(text)
-    except Exception as exc:
-        raise RuntimeError(f"Không lấy được danh sách máy chủ: {exc}") from exc
+    del timeout
+    return parse_server_list(SERVER_LIST)
