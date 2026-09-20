@@ -95,6 +95,7 @@ class GameClient:
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._write_lock = asyncio.Lock()
+        self._received_commands: list[int] = []
 
     @property
     def connected(self) -> bool:
@@ -116,6 +117,7 @@ class GameClient:
         self._characters = asyncio.Event()
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
+        self._received_commands.clear()
         self.status = "Đang kết nối"
 
         try:
@@ -132,13 +134,22 @@ class GameClient:
             self.status = "Đang đăng nhập"
             await self._send_client_info()
             await self._send_login()
-            await self._wait(self._characters, 10.0, "Không nhận được danh sách nhân vật")
+            await self._wait(
+                self._characters,
+                10.0,
+                "Không nhận được phản hồi đăng nhập từ máy chủ",
+            )
 
             if not self.characters:
-                raise RuntimeError("Tài khoản chưa có nhân vật")
+                raise RuntimeError("Tài khoản chưa có nhân vật trên máy chủ này")
 
-            await self._select_character(self.characters[0].name)
-            await self._wait(self._character_ready, 12.0, "Không nhận được dữ liệu nhân vật")
+            self.status = "Đang vào nhân vật"
+            await self._enter_character(self.characters[0].player_id)
+            await self._wait(
+                self._character_ready,
+                12.0,
+                "Đã đăng nhập nhưng chưa nhận được dữ liệu nhân vật",
+            )
 
             try:
                 await asyncio.wait_for(self._task_ready.wait(), timeout=2.5)
@@ -185,6 +196,9 @@ class GameClient:
         except TimeoutError as exc:
             if self.error:
                 raise RuntimeError(self.error) from exc
+            commands = ", ".join(str(command) for command in self._received_commands[-12:])
+            if commands:
+                message = f"{message}. Cmd đã nhận: {commands}"
             raise RuntimeError(message) from exc
         if self.error:
             raise RuntimeError(self.error)
@@ -227,9 +241,9 @@ class GameClient:
         )
         await self._send(-29, payload)
 
-    async def _select_character(self, name: str) -> None:
-        payload = BufferWriter().u8(1).utf(name).build()
-        await self._send(-28, payload)
+    async def _enter_character(self, player_id: int) -> None:
+        payload = BufferWriter().i32(player_id).build()
+        await self._send(-38, payload)
 
     async def _read_loop(self) -> None:
         reader = self.reader
@@ -239,6 +253,14 @@ class GameClient:
         try:
             while True:
                 packet = await self.protocol.read_packet(reader)
+                self._received_commands.append(packet.command)
+                if len(self._received_commands) > 32:
+                    del self._received_commands[:-32]
+                logger.debug(
+                    "Game packet nhận cmd=%s size=%s",
+                    packet.command,
+                    len(packet.data),
+                )
                 await self._handle(packet)
         except asyncio.CancelledError:
             raise
