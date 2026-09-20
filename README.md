@@ -107,7 +107,7 @@ Trong `/admin` có mục **Quản lý thông báo Boss**.
 
 Phần hiện tại hỗ trợ:
 - nhập tài khoản và mật khẩu trong chat riêng với bot;
-- lấy danh sách máy chủ từ client và đối chiếu `server_extra.php`;
+- lấy trực tiếp danh sách máy chủ từ `http://112.213.94.23/mod/server_extra.php`;
 - kết nối TCP theo giao thức của client;
 - đăng nhập, chọn nhân vật đầu tiên và giữ session;
 - đọc tên nhân vật, sức mạnh, vàng, ngọc xanh, ngọc khóa và nhiệm vụ hiện tại.
