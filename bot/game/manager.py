@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 from bot.game.client import GameClient
@@ -13,6 +14,9 @@ class GameProfile:
     server: GameServer | None = None
     server_options: dict[str, GameServer] = field(default_factory=dict)
     client: GameClient | None = None
+    retry_task: asyncio.Task | None = field(default=None, repr=False)
+    auto_attempts: int = 0
+    last_connect_error: str | None = None
     input_mode: str | None = None
 
     @property
@@ -48,14 +52,31 @@ class GameManager:
         await client.connect()
         return client
 
+    async def cancel_retry(self, user_id: int) -> None:
+        profile = self.get(user_id)
+        task = profile.retry_task
+        profile.retry_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
     async def disconnect(self, user_id: int) -> None:
         profile = self.get(user_id)
+        await self.cancel_retry(user_id)
         if profile.client:
             await profile.client.disconnect()
             profile.client = None
+        profile.auto_attempts = 0
+        profile.last_connect_error = None
 
     async def close_all(self) -> None:
-        for profile in list(self._profiles.values()):
+        for user_id, profile in list(self._profiles.items()):
+            await self.cancel_retry(user_id)
             if profile.client:
                 await profile.client.disconnect()
                 profile.client = None
