@@ -96,6 +96,7 @@ class GameClient:
         self._task_ready = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._received_commands: list[int] = []
+        self._finish_update_sent = False
 
     @property
     def connected(self) -> bool:
@@ -118,6 +119,7 @@ class GameClient:
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._received_commands.clear()
+        self._finish_update_sent = False
         self.status = "Đang kết nối"
 
         try:
@@ -136,8 +138,8 @@ class GameClient:
             await self._send_login()
             await self._wait(
                 self._characters,
-                10.0,
-                "Không nhận được phản hồi đăng nhập từ máy chủ",
+                15.0,
+                "Không nhận được PlayerData sau đăng nhập",
             )
 
             if not self.characters:
@@ -285,6 +287,9 @@ class GameClient:
         if packet.command == 0:
             self._handle_character_list(packet.data)
             return
+        if packet.command == -28:
+            await self._handle_not_map(packet.data)
+            return
         if packet.command == -30:
             self._handle_subcommand(packet.data)
             return
@@ -302,6 +307,26 @@ class GameClient:
             return
         if packet.command == 6:
             self._handle_money_update(packet.data)
+
+    async def _handle_not_map(self, data: bytes) -> None:
+        reader = BufferReader(data)
+        if not reader.remaining:
+            return
+
+        subcommand = reader.u8()
+        logger.debug(
+            "Game packet -28 sub=%s size=%s",
+            subcommand,
+            len(data),
+        )
+
+        if subcommand != 4 or self._finish_update_sent:
+            return
+
+        self._finish_update_sent = True
+        self.status = "Đang hoàn tất cập nhật"
+        logger.info("Game login: nhận -28/4, gửi -38 hoàn tất cập nhật")
+        await self._send(-38, b"")
 
     def _handle_key(self, data: bytes) -> None:
         reader = BufferReader(data)
@@ -334,6 +359,7 @@ class GameClient:
                 )
             )
         self.characters = characters
+        logger.info("Game login: nhận PlayerData, số nhân vật=%s", len(characters))
         self._characters.set()
 
     def _handle_subcommand(self, data: bytes) -> None:
