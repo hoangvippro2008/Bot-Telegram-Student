@@ -142,6 +142,16 @@ def _cancel_input() -> InlineKeyboardMarkup:
     )
 
 
+def _server_icon(server: GameServer) -> str:
+    if server.language == 0:
+        return "🇻🇳"
+    if server.language == 1:
+        return "🌐"
+    if server.language == 2:
+        return "🇮🇩"
+    return "🛰"
+
+
 def _server_menu(
     servers: tuple[GameServer, ...],
     selected: GameServer | None,
@@ -152,14 +162,14 @@ def _server_menu(
         marker = (
             "✅ "
             if selected
-            and selected.id == server.id
             and selected.host == server.host
+            and selected.port == server.port
             else ""
         )
-        extra = "⭐ " if server.extra else ""
+        new = "🆕 " if server.is_new else ""
         current.append(
             InlineKeyboardButton(
-                f"{marker}{extra}{server.name}",
+                f"{marker}{_server_icon(server)} {new}{server.name}",
                 callback_data=f"boss:server:{server.id}",
             )
         )
@@ -168,6 +178,7 @@ def _server_menu(
             current = []
     if current:
         rows.append(current)
+    rows.append([InlineKeyboardButton("🔄 Tải lại", callback_data="boss:servers")])
     rows.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -240,14 +251,33 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:servers":
         await query.answer("Đang lấy danh sách máy chủ...")
-        servers = await list_servers()
+        try:
+            servers = await list_servers()
+        except Exception as exc:
+            await query.edit_message_text(
+                "❌ <b>KHÔNG LẤY ĐƯỢC MÁY CHỦ</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"<code>{_safe(exc)}</code>\n\n"
+                "Danh sách được lấy trực tiếp từ <code>server_extra.php</code>.",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("🔄 Thử lại", callback_data="boss:servers")],
+                        [InlineKeyboardButton("⬅️ Quay lại", callback_data="boss:menu")],
+                    ]
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
         context.application.bot_data["game_servers"] = {
             server.id: server for server in servers
         }
         await query.edit_message_text(
             "🌐 <b>CHỌN MÁY CHỦ</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "⭐ là máy chủ được <code>server_extra.php</code> trả về.",
+            f"Đã tải <b>{len(servers)}</b> máy chủ từ "
+            "<code>server_extra.php</code>.\n\n"
+            "Chọn máy chủ muốn kết nối:",
             reply_markup=_server_menu(servers, profile.server),
             parse_mode=ParseMode.HTML,
         )
@@ -263,7 +293,17 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         servers = context.application.bot_data.get("game_servers", {})
         server = servers.get(server_id) if isinstance(servers, dict) else None
         if not isinstance(server, GameServer):
-            fresh = await list_servers()
+            try:
+                fresh = await list_servers()
+            except Exception as exc:
+                await query.answer(
+                    f"Không tải lại được máy chủ: {exc}",
+                    show_alert=True,
+                )
+                return
+            context.application.bot_data["game_servers"] = {
+                item.id: item for item in fresh
+            }
             server = next((item for item in fresh if item.id == server_id), None)
         if server is None:
             await query.answer("Không tìm thấy máy chủ", show_alert=True)
