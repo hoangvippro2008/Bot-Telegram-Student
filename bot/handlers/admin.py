@@ -39,6 +39,7 @@ def _safe(value: object) -> str:
 def _menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🔔 Quản lý thông báo Boss", callback_data="boss:menu")],
             [InlineKeyboardButton("👥 Nhóm người dùng", callback_data="admin:group")],
             [InlineKeyboardButton("📊 Kiểm tra tổng quan", callback_data="admin:check")],
             [

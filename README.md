@@ -99,3 +99,19 @@ Người chưa tham gia nhóm sẽ bị chặn trước mọi chức năng và n
 ```bat
 run.bat
 ```
+
+
+## Kết nối game
+
+Trong `/admin` có mục **Quản lý thông báo Boss**.
+
+Phần hiện tại hỗ trợ:
+- nhập tài khoản và mật khẩu trong chat riêng với bot;
+- lấy danh sách máy chủ từ client và đối chiếu `server_extra.php`;
+- kết nối TCP theo giao thức của client;
+- đăng nhập, chọn nhân vật đầu tiên và giữ session;
+- đọc tên nhân vật, sức mạnh, vàng, ngọc xanh, ngọc khóa và nhiệm vụ hiện tại.
+
+Mật khẩu chỉ giữ trong RAM khi bot đang chạy. Bot không ghi mật khẩu vào log hoặc `config.json`.
+
+Mục **Kiểm tra thông báo Boss** mới để sẵn giao diện, chưa xử lý packet Boss ở bản này.
