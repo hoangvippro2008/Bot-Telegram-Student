@@ -277,7 +277,7 @@ def _server_list_text(
     lines.extend(
         [
             "",
-            "Nguồn: <code>server_extra.php</code>",
+            "Nguồn: <code>SERVER_LIST</code> trong bot",
             "✅ là máy chủ đang được chọn để kết nối.",
         ]
     )
@@ -383,7 +383,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "boss:servers":
-        await _answer(query, "Đang lấy danh sách máy chủ...")
+        await _answer(query, "Đang mở danh sách máy chủ...")
         try:
             servers = await list_servers()
         except Exception as exc:
@@ -392,7 +392,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "❌ <b>KHÔNG LẤY ĐƯỢC MÁY CHỦ</b>\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"<code>{_safe(exc)}</code>\n\n"
-                "Danh sách được lấy trực tiếp từ <code>server_extra.php</code>.",
+                "Danh sách máy chủ đang dùng là danh sách cố định trong bot.",
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [InlineKeyboardButton("🔄 Thử lại", callback_data="boss:servers")],
@@ -418,8 +418,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             query,
             "🌐 <b>CHỌN MÁY CHỦ</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            f"Đã tải <b>{len(servers)}</b> máy chủ trực tiếp từ "
-            "<code>server_extra.php</code>.\n"
+            f"Đã tải <b>{len(servers)}</b> máy chủ từ danh sách cố định.\n"
             f"🎯 <b>Đang chọn:</b> {selected_text}\n\n"
             "Mỗi nút bên dưới hiển thị đúng <b>Tên · host:port</b>:",
             reply_markup=_server_menu(servers, profile.server),
