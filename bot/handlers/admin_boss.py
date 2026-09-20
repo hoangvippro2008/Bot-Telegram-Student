@@ -18,6 +18,7 @@ from bot.system import format_duration
 
 logger = logging.getLogger(__name__)
 _AUTO_CONNECT_DELAY = 5.0
+_AUTO_REPORT_INTERVAL = 3.0
 
 
 def _config(context: ContextTypes.DEFAULT_TYPE) -> Config:
@@ -280,9 +281,38 @@ async def _auto_connect(
                 ),
             )
 
+            connect_task = asyncio.create_task(manager.connect(user_id))
             try:
-                await manager.connect(user_id)
+                while not connect_task.done():
+                    done, _ = await asyncio.wait(
+                        {connect_task},
+                        timeout=_AUTO_REPORT_INTERVAL,
+                    )
+                    if done:
+                        break
+
+                    client = profile.client
+                    phase = client.status if client else "Đang kết nối"
+                    await _update_auto_connect_message(
+                        application,
+                        chat_id,
+                        status_message_id,
+                        _auto_connect_text(
+                            profile,
+                            f"🟡 {phase}",
+                        ),
+                    )
+
+                await connect_task
             except asyncio.CancelledError:
+                if not connect_task.done():
+                    connect_task.cancel()
+                    try:
+                        await connect_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
                 raise
             except Exception as exc:
                 profile.last_connect_error = str(exc)
