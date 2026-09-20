@@ -117,6 +117,12 @@ class GameClient:
         self.status = "Đang kết nối"
 
         try:
+            logger.info(
+                "Game connect: %s -> %s:%s",
+                self.server.name,
+                self.server.host,
+                self.server.port,
+            )
             self.reader, self.writer = await asyncio.wait_for(
                 asyncio.open_connection(self.server.host, self.server.port),
                 timeout=self.connect_timeout,
