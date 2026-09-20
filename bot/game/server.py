@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
 
 EXTRA_URL = "http://112.213.94.23/mod/server_extra.php"
+_MAX_RESPONSE = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -14,64 +15,100 @@ class GameServer:
     name: str
     host: str
     port: int
-    extra: bool = False
+    language: int
+    server_type: int
+    is_new: bool
 
 
-SERVERS = (
-    GameServer(1, "Vũ trụ 1", "dragon1.teamobi.com", 14445),
-    GameServer(2, "Vũ trụ 2", "dragon2.teamobi.com", 14445),
-    GameServer(3, "Vũ trụ 3", "dragon3.teamobi.com", 14445),
-    GameServer(4, "Vũ trụ 4", "dragon4.teamobi.com", 14445),
-    GameServer(5, "Vũ trụ 5", "dragon5.teamobi.com", 14445),
-    GameServer(6, "Vũ trụ 6", "dragon6.teamobi.com", 14445),
-    GameServer(7, "Vũ trụ 7", "dragon7.teamobi.com", 14445),
-    GameServer(8, "Vũ trụ 8", "dragon10.teamobi.com", 14446),
-    GameServer(9, "Vũ trụ 9", "dragon10.teamobi.com", 14447),
-    GameServer(10, "Vũ trụ 10", "dragon10.teamobi.com", 14445),
-    GameServer(11, "Vũ trụ 11", "dragon11.teamobi.com", 14445),
-    GameServer(12, "Võ đài liên vũ trụ", "dragonwar.teamobi.com", 20000),
-)
+def _decode(raw: bytes) -> str:
+    for encoding in ("utf-8-sig", "cp1258", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Không đọc được nội dung server_extra.php")
 
 
-def get_server(server_id: int) -> GameServer | None:
-    return next((server for server in SERVERS if server.id == server_id), None)
+def parse_server_list(text: str) -> tuple[GameServer, ...]:
+    value = text.replace("\x00", "").strip()
+    if not value:
+        raise ValueError("server_extra.php trả dữ liệu rỗng")
 
+    parts = [part.strip() for part in value.split(",")]
+    while parts and not parts[-1]:
+        parts.pop()
 
-def _resolve_extra(timeout: float) -> tuple[str, int] | None:
-    request = Request(EXTRA_URL, headers={"User-Agent": "NRO-PC/2.5.0"})
-    with urlopen(request, timeout=timeout) as response:
-        text = response.read(128).decode("utf-8", errors="replace").strip()
+    if len(parts) < 3:
+        raise ValueError("Danh sách máy chủ không đúng định dạng")
 
-    if ":" not in text:
-        return None
+    entries = parts
+    if len(parts) >= 2 and parts[-1].lstrip("-").isdigit() and parts[-2].lstrip("-").isdigit():
+        entries = parts[:-2]
 
-    host, raw_port = text.split(":", 1)
-    host = host.strip()
-    raw_port = raw_port.strip()
-    if not host or not raw_port.isdigit():
-        return None
+    servers: list[GameServer] = []
+    for raw_entry in entries:
+        if not raw_entry:
+            continue
 
-    port = int(raw_port)
-    if not 1 <= port <= 65535:
-        return None
-    return host, port
+        fields = [field.strip() for field in raw_entry.split(":")]
+        if len(fields) != 6:
+            raise ValueError(f"Máy chủ sai định dạng: {raw_entry}")
 
+        name, host, raw_port, raw_language, raw_type, raw_new = fields
+        if not name or not host:
+            raise ValueError(f"Máy chủ thiếu tên hoặc host: {raw_entry}")
+        if not raw_port.isdigit():
+            raise ValueError(f"Port máy chủ không hợp lệ: {raw_entry}")
+        if not raw_language.lstrip("-").isdigit():
+            raise ValueError(f"Language máy chủ không hợp lệ: {raw_entry}")
+        if not raw_type.lstrip("-").isdigit():
+            raise ValueError(f"Type máy chủ không hợp lệ: {raw_entry}")
+        if not raw_new.lstrip("-").isdigit():
+            raise ValueError(f"isNew máy chủ không hợp lệ: {raw_entry}")
 
-async def list_servers(timeout: float = 4.0) -> tuple[GameServer, ...]:
-    servers = list(SERVERS)
-    try:
-        extra = await asyncio.to_thread(_resolve_extra, timeout)
-    except Exception:
-        extra = None
+        port = int(raw_port)
+        if not 1 <= port <= 65535:
+            raise ValueError(f"Port máy chủ ngoài phạm vi: {raw_entry}")
 
-    if extra is None:
-        return tuple(servers)
+        servers.append(
+            GameServer(
+                id=len(servers) + 1,
+                name=name,
+                host=host,
+                port=port,
+                language=int(raw_language),
+                server_type=int(raw_type),
+                is_new=int(raw_new) != 0,
+            )
+        )
 
-    host, port = extra
-    for index, server in enumerate(servers):
-        if server.host == host and server.port == port:
-            servers[index] = replace(server, extra=True)
-            return tuple(servers)
+    if not servers:
+        raise ValueError("Không tìm thấy máy chủ hợp lệ trong server_extra.php")
 
-    servers.insert(0, GameServer(0, "Máy chủ Extra", host, port, extra=True))
     return tuple(servers)
+
+
+def _download_server_list(timeout: float) -> str:
+    request = Request(
+        EXTRA_URL,
+        headers={
+            "User-Agent": "NRO-PC/2.5.0",
+            "Accept": "text/plain,*/*",
+            "Cache-Control": "no-cache",
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read(_MAX_RESPONSE + 1)
+
+    if len(raw) > _MAX_RESPONSE:
+        raise ValueError("Danh sách máy chủ vượt giới hạn cho phép")
+
+    return _decode(raw)
+
+
+async def list_servers(timeout: float = 6.0) -> tuple[GameServer, ...]:
+    try:
+        text = await asyncio.to_thread(_download_server_list, timeout)
+        return parse_server_list(text)
+    except Exception as exc:
+        raise RuntimeError(f"Không lấy được danh sách máy chủ: {exc}") from exc
