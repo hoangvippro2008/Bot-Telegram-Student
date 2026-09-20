@@ -15,6 +15,13 @@ _VERSION = "2.5.0"
 _PLATFORM = "Pc platform xxx"
 _CLIENT_TYPE = 4
 _ZOOM_LEVEL = 1
+_SERVER15_HOST = "dragon15.teamobi.com"
+_SERVER15_INFO = bytes.fromhex(
+    "526172211a0700cf907300000d00000000000000baa47424943700300000002000000002"
+    "9ce4200fea592b571d330a0020000000696e666f5f342e747874a5ea17f7234e09cd00f0"
+    "4f4b455b7fb7c8c21534e06e28e14e5bffb08d5bd1fbe5defec9d3f6d327afe67cc2d4"
+    "d5a7276db80a60c91dfdf541b18038bbc43d7b00400700"
+)
 
 
 @dataclass
@@ -96,6 +103,10 @@ class GameClient:
         return self.writer is not None and not self.writer.is_closing() and self.error is None
 
     @property
+    def _is_server15(self) -> bool:
+        return self.server.host.casefold() == _SERVER15_HOST
+
+    @property
     def uptime(self) -> float:
         if self.connected_at is None:
             return 0.0
@@ -134,11 +145,14 @@ class GameClient:
             await self._wait(self._handshake, 6.0, "Không nhận được key từ máy chủ")
 
             self.status = "Đang đăng nhập"
-            await self._send_client_info()
-            await asyncio.sleep(0.5)
-            await self._send_image_source()
-            await asyncio.sleep(0.3)
-            await self._send_login()
+            if self._is_server15:
+                await self._login_server15()
+            else:
+                await self._send_client_info()
+                await asyncio.sleep(0.5)
+                await self._send_image_source()
+                await asyncio.sleep(0.3)
+                await self._send_login()
 
             await self._wait(
                 self._character_ready,
@@ -220,6 +234,29 @@ class GameClient:
             await writer.drain()
 
     async def _send_client_info(self) -> None:
+        if self._is_server15:
+            payload = (
+                BufferWriter()
+                .u8(2)
+                .u8(_CLIENT_TYPE)
+                .u8(4)
+                .boolean(False)
+                .i32(960)
+                .i32(540)
+                .boolean(True)
+                .boolean(True)
+                .utf(f"{_PLATFORM}|{_VERSION}")
+                .i16(len(_SERVER15_INFO))
+                .build()
+                + _SERVER15_INFO
+            )
+            await self._send(-29, payload)
+            logger.info(
+                "Game server 15: đã gửi ClientType tương thích + info (%s bytes)",
+                len(_SERVER15_INFO),
+            )
+            return
+
         payload = (
             BufferWriter()
             .u8(2)
@@ -234,6 +271,32 @@ class GameClient:
             .build()
         )
         await self._send(-29, payload)
+
+    async def _login_server15(self) -> None:
+        logger.info("Game server 15: dùng luồng bootstrap tương thích 2.5.0")
+        await self._send_client_info()
+        await asyncio.sleep(2.0)
+        await self._send_image_source()
+        await asyncio.sleep(1.0)
+        await self._send_login()
+        await asyncio.sleep(1.0)
+
+        self.status = "Đang tải dữ liệu game"
+        await self._send(-28, BufferWriter().u8(6).build())
+        await self._send(-28, BufferWriter().u8(7).build())
+        await self._send(-28, BufferWriter().u8(8).build())
+        await self._send(-87, b"")
+        logger.info("Game server 15: đã request Map/Skill/Item/Data")
+
+        await asyncio.sleep(1.0)
+        self.status = "Đang hoàn tất đồng bộ"
+        self._sync_finished = True
+        await self._send(-28, BufferWriter().u8(13).build())
+        await self._send(-38, b"")
+        logger.info("Game server 15: clientOk + finishUpdate đã gửi")
+
+        if self._finish_map_task is None or self._finish_map_task.done():
+            self._finish_map_task = asyncio.create_task(self._finish_load_map())
 
     async def _send_image_source(self) -> None:
         payload = BufferWriter().i16(0).build()
@@ -338,6 +401,24 @@ class GameClient:
         )
 
         if subcommand == 4:
+            if self._is_server15:
+                if reader.remaining >= 5:
+                    vs_data = reader.u8()
+                    vs_map = reader.u8()
+                    vs_skill = reader.u8()
+                    vs_item = reader.u8()
+                    extra = reader.u8()
+                    self._server_versions = (vs_data, vs_map, vs_skill, vs_item)
+                    logger.info(
+                        "Game server 15: versions data=%s map=%s skill=%s item=%s extra=%s",
+                        vs_data,
+                        vs_map,
+                        vs_skill,
+                        vs_item,
+                        extra,
+                    )
+                return
+
             await self._start_sync(reader)
             return
 
