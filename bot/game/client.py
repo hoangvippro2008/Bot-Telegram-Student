@@ -91,6 +91,8 @@ class GameClient:
         self._handshake = asyncio.Event()
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
+        self._login_wait = asyncio.Event()
+        self._login_wait_seconds = 0
         self._write_lock = asyncio.Lock()
         self._received_commands: list[int] = []
         self._sync_pending: set[str] = set()
@@ -120,6 +122,8 @@ class GameClient:
         self._handshake = asyncio.Event()
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
+        self._login_wait = asyncio.Event()
+        self._login_wait_seconds = 0
         self._received_commands.clear()
         self._sync_pending.clear()
         self._sync_started = False
@@ -278,25 +282,45 @@ class GameClient:
         await asyncio.sleep(2.0)
         await self._send_image_source()
         await asyncio.sleep(1.0)
-        await self._send_login()
-        await asyncio.sleep(1.0)
 
+        while True:
+            self._login_wait.clear()
+            self._login_wait_seconds = 0
+            self.status = "Đang đăng nhập"
+            await self._send_login()
+            logger.info("Game server 15: đã gửi login")
+
+            try:
+                await asyncio.wait_for(self._login_wait.wait(), timeout=2.0)
+            except TimeoutError:
+                break
+
+            seconds = max(1, self._login_wait_seconds)
+            logger.info(
+                "Game server 15: server yêu cầu chờ %s giây rồi đăng nhập lại",
+                seconds,
+            )
+            for remaining in range(seconds, 0, -1):
+                if self.error:
+                    raise RuntimeError(self.error)
+                self.status = f"Chờ đăng nhập server {remaining}s"
+                await asyncio.sleep(1.0)
+
+        if self.error:
+            raise RuntimeError(self.error)
+
+        if self._sync_started:
+            logger.info("Game server 15: server đã bắt đầu đồng bộ")
+            return
+
+        self._sync_started = True
+        self._sync_pending = {"data", "map", "skill", "item"}
         self.status = "Đang tải dữ liệu game"
         await self._send(-28, BufferWriter().u8(6).build())
         await self._send(-28, BufferWriter().u8(7).build())
         await self._send(-28, BufferWriter().u8(8).build())
         await self._send(-87, b"")
         logger.info("Game server 15: đã request Map/Skill/Item/Data")
-
-        await asyncio.sleep(1.0)
-        self.status = "Đang hoàn tất đồng bộ"
-        self._sync_finished = True
-        await self._send(-28, BufferWriter().u8(13).build())
-        await self._send(-38, b"")
-        logger.info("Game server 15: clientOk + finishUpdate đã gửi")
-
-        if self._finish_map_task is None or self._finish_map_task.done():
-            self._finish_map_task = asyncio.create_task(self._finish_load_map())
 
     async def _send_image_source(self) -> None:
         payload = BufferWriter().i16(0).build()
@@ -354,6 +378,9 @@ class GameClient:
         if packet.command == -26:
             self._handle_dialog(packet.data)
             return
+        if packet.command == 122:
+            self._handle_login_wait(packet.data)
+            return
         if packet.command in {-25, 94}:
             self._handle_server_notice(packet.command, packet.data)
             return
@@ -407,24 +434,6 @@ class GameClient:
         )
 
         if subcommand == 4:
-            if self._is_server15:
-                if reader.remaining >= 5:
-                    vs_data = reader.u8()
-                    vs_map = reader.u8()
-                    vs_skill = reader.u8()
-                    vs_item = reader.u8()
-                    extra = reader.u8()
-                    self._server_versions = (vs_data, vs_map, vs_skill, vs_item)
-                    logger.info(
-                        "Game server 15: versions data=%s map=%s skill=%s item=%s extra=%s",
-                        vs_data,
-                        vs_map,
-                        vs_skill,
-                        vs_item,
-                        extra,
-                    )
-                return
-
             await self._start_sync(reader)
             return
 
@@ -511,6 +520,20 @@ class GameClient:
             return
         await self._send(-39, b"")
         logger.info("Game login: finishLoadMap (-39) đã gửi")
+
+    def _handle_login_wait(self, data: bytes) -> None:
+        reader = BufferReader(data)
+        if reader.remaining < 2:
+            return
+
+        seconds = reader.i16()
+        if seconds <= 0:
+            return
+
+        self._login_wait_seconds = seconds
+        self.status = f"Chờ đăng nhập server {seconds}s"
+        logger.info("Game login queue: chờ %s giây", seconds)
+        self._login_wait.set()
 
     def _handle_dialog(self, data: bytes) -> None:
         reader = BufferReader(data)
