@@ -4,7 +4,7 @@ import html
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from bot.config import Config
@@ -34,6 +34,21 @@ def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 def _safe(value: object) -> str:
     return html.escape(str(value))
+
+
+async def _answer(query, text: str | None = None, show_alert: bool = False) -> bool:
+    try:
+        await query.answer(text=text, show_alert=show_alert)
+        return True
+    except BadRequest as exc:
+        message = str(exc).lower()
+        if (
+            "query is too old" in message
+            or "response timeout expired" in message
+            or "query id is invalid" in message
+        ):
+            return False
+        raise
 
 
 def _num(value: int | None) -> str:
@@ -189,11 +204,12 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if query is None or user is None:
         return
     if not _is_admin(update, context):
-        await query.answer("Bạn không có quyền truy cập.", show_alert=True)
+        await _answer(query, "Bạn không có quyền truy cập.", show_alert=True)
         return
 
     if not update.effective_chat or update.effective_chat.type != ChatType.PRIVATE:
-        await query.answer(
+        await _answer(
+            query,
             "Quản lý game chỉ dùng trong chat riêng với bot.",
             show_alert=True,
         )
@@ -205,7 +221,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:menu":
         profile.input_mode = None
-        await query.answer()
+        await _answer(query)
         await query.edit_message_text(
             _boss_text(profile),
             reply_markup=_menu(profile),
@@ -215,7 +231,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:account":
         profile.input_mode = "account"
-        await query.answer()
+        await _answer(query)
         await query.edit_message_text(
             "👤 <b>CẤU HÌNH TÀI KHOẢN</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -227,7 +243,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:password":
         profile.input_mode = "password"
-        await query.answer()
+        await _answer(query)
         await query.edit_message_text(
             "🔑 <b>CẤU HÌNH MẬT KHẨU</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -241,7 +257,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:cancel_input":
         profile.input_mode = None
-        await query.answer("Đã hủy")
+        await _answer(query, "Đã hủy")
         await query.edit_message_text(
             _boss_text(profile),
             reply_markup=_menu(profile),
@@ -250,7 +266,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "boss:servers":
-        await query.answer("Đang lấy danh sách máy chủ...")
+        await _answer(query, "Đang lấy danh sách máy chủ...")
         try:
             servers = await list_servers()
         except Exception as exc:
@@ -287,7 +303,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             server_id = int(data.rsplit(":", 1)[1])
         except ValueError:
-            await query.answer("Máy chủ không hợp lệ", show_alert=True)
+            await _answer(query, "Máy chủ không hợp lệ", show_alert=True)
             return
 
         servers = context.application.bot_data.get("game_servers", {})
@@ -296,7 +312,8 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             try:
                 fresh = await list_servers()
             except Exception as exc:
-                await query.answer(
+                await _answer(
+                    query,
                     f"Không tải lại được máy chủ: {exc}",
                     show_alert=True,
                 )
@@ -306,11 +323,11 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             }
             server = next((item for item in fresh if item.id == server_id), None)
         if server is None:
-            await query.answer("Không tìm thấy máy chủ", show_alert=True)
+            await _answer(query, "Không tìm thấy máy chủ", show_alert=True)
             return
 
         profile.server = server
-        await query.answer(f"Đã chọn {server.name}")
+        await _answer(query, f"Đã chọn {server.name}")
         await query.edit_message_text(
             _boss_text(profile),
             reply_markup=_menu(profile),
@@ -320,7 +337,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "boss:connect":
         profile.input_mode = None
-        await query.answer("Đang kết nối...")
+        await _answer(query, "Đang kết nối...")
         await query.edit_message_text(
             "⏳ <b>ĐANG KẾT NỐI GAME</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -349,7 +366,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "boss:disconnect":
-        await query.answer("Đang ngắt kết nối...")
+        await _answer(query, "Đang ngắt kết nối...")
         await manager.disconnect(user.id)
         await query.edit_message_text(
             _boss_text(profile),
@@ -359,7 +376,7 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "boss:character":
-        await query.answer()
+        await _answer(query)
         await query.edit_message_text(
             _character_text(profile),
             reply_markup=_character_menu(),
@@ -368,7 +385,8 @@ async def boss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "boss:check":
-        await query.answer(
+        await _answer(
+            query,
             "Phần kiểm tra thông báo Boss sẽ làm ở bước tiếp theo.",
             show_alert=True,
         )
