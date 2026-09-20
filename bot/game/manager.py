@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from bot.game.client import GameClient
 from bot.game.server import GameServer
@@ -11,6 +11,7 @@ class GameProfile:
     account: str | None = None
     password: str | None = None
     server: GameServer | None = None
+    server_options: dict[str, GameServer] = field(default_factory=dict)
     client: GameClient | None = None
     input_mode: str | None = None
 
