@@ -17,16 +17,6 @@ _CLIENT_TYPE = 4
 _ZOOM_LEVEL = 1
 
 
-@dataclass(frozen=True)
-class CharacterChoice:
-    player_id: int
-    name: str
-    head: int
-    body: int
-    leg: int
-    power: int
-
-
 @dataclass
 class TaskState:
     task_id: int
@@ -67,6 +57,7 @@ class CharacterState:
     gem: int | None = None
     locked_gem: int | None = None
     task: TaskState | None = None
+    mission_notice: str | None = None
 
 
 class GameClient:
@@ -85,13 +76,12 @@ class GameClient:
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.reader_task: asyncio.Task | None = None
-        self.characters: list[CharacterChoice] = []
+        self._finish_map_task: asyncio.Task | None = None
         self.character = CharacterState()
         self.status = "Chưa kết nối"
         self.error: str | None = None
         self.connected_at: float | None = None
         self._handshake = asyncio.Event()
-        self._characters = asyncio.Event()
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._write_lock = asyncio.Lock()
@@ -114,11 +104,9 @@ class GameClient:
     async def connect(self) -> None:
         await self.disconnect()
         self.protocol = GameProtocol()
-        self.characters.clear()
         self.character = CharacterState()
         self.error = None
         self._handshake = asyncio.Event()
-        self._characters = asyncio.Event()
         self._character_ready = asyncio.Event()
         self._task_ready = asyncio.Event()
         self._received_commands.clear()
@@ -141,22 +129,15 @@ class GameClient:
 
             self.status = "Đang đăng nhập"
             await self._send_client_info()
+            await asyncio.sleep(0.5)
+            await self._send_image_source()
+            await asyncio.sleep(0.3)
             await self._send_login()
-            await self._wait(
-                self._characters,
-                30.0,
-                "Không nhận được PlayerData sau khi đồng bộ dữ liệu",
-            )
 
-            if not self.characters:
-                raise RuntimeError("Tài khoản chưa có nhân vật trên máy chủ này")
-
-            self.status = "Đang vào nhân vật"
-            await self._enter_character(self.characters[0].player_id)
             await self._wait(
                 self._character_ready,
-                12.0,
-                "Đã đăng nhập nhưng chưa nhận được dữ liệu nhân vật",
+                30.0,
+                "Không nhận được dữ liệu nhân vật (-30/0) sau đăng nhập",
             )
 
             try:
@@ -172,6 +153,17 @@ class GameClient:
             raise
 
     async def disconnect(self, keep_error: bool = False) -> None:
+        finish_map_task = self._finish_map_task
+        self._finish_map_task = None
+        if finish_map_task and finish_map_task is not asyncio.current_task():
+            finish_map_task.cancel()
+            try:
+                await finish_map_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
         task = self.reader_task
         self.reader_task = None
         if task and task is not asyncio.current_task():
@@ -237,6 +229,11 @@ class GameClient:
         )
         await self._send(-29, payload)
 
+    async def _send_image_source(self) -> None:
+        payload = BufferWriter().i16(0).build()
+        await self._send(-111, payload)
+        logger.debug("Game login: đã gửi ImageSource rỗng")
+
     async def _send_login(self) -> None:
         payload = (
             BufferWriter()
@@ -248,10 +245,6 @@ class GameClient:
             .build()
         )
         await self._send(-29, payload)
-
-    async def _enter_character(self, player_id: int) -> None:
-        payload = BufferWriter().i32(player_id).build()
-        await self._send(-38, payload)
 
     async def _read_loop(self) -> None:
         reader = self.reader
@@ -282,7 +275,6 @@ class GameClient:
             if self.error:
                 self.status = "Mất kết nối"
             self._handshake.set()
-            self._characters.set()
             self._character_ready.set()
             self._task_ready.set()
 
@@ -290,15 +282,11 @@ class GameClient:
         if packet.command == -27:
             self._handle_key(packet.data)
             return
-        if packet.command == 0:
-            self._handle_character_list(packet.data)
-            return
         if packet.command == 2:
             self.error = (
                 f"Máy chủ {self.server.name} báo tài khoản chưa có nhân vật "
                 "(cmd 2 / CREATE_CHAR)"
             )
-            self._characters.set()
             self._character_ready.set()
             return
         if packet.command == -87:
@@ -312,6 +300,9 @@ class GameClient:
             return
         if packet.command == -30:
             self._handle_subcommand(packet.data)
+            return
+        if packet.command == 92:
+            self._handle_game_message(packet.data)
             return
         if packet.command == 40:
             self._handle_task(packet.data)
@@ -418,6 +409,16 @@ class GameClient:
         await self._send(-38, b"")
         logger.info("Game sync: clientOk + finishUpdate đã gửi")
 
+        if self._finish_map_task is None or self._finish_map_task.done():
+            self._finish_map_task = asyncio.create_task(self._finish_load_map())
+
+    async def _finish_load_map(self) -> None:
+        await asyncio.sleep(4.0)
+        if self.writer is None or self.writer.is_closing():
+            return
+        await self._send(-39, b"")
+        logger.info("Game login: finishLoadMap (-39) đã gửi")
+
     def _handle_key(self, data: bytes) -> None:
         reader = BufferReader(data)
         size = reader.u8()
@@ -433,30 +434,28 @@ class GameClient:
                 pass
         self._handshake.set()
 
-    def _handle_character_list(self, data: bytes) -> None:
-        reader = BufferReader(data)
-        count = reader.u8()
-        characters: list[CharacterChoice] = []
-        for _ in range(count):
-            characters.append(
-                CharacterChoice(
-                    player_id=reader.i32(),
-                    name=reader.utf(),
-                    head=reader.i16(),
-                    body=reader.i16(),
-                    leg=reader.i16(),
-                    power=reader.i64(),
-                )
-            )
-        self.characters = characters
-        logger.info("Game login: nhận PlayerData, số nhân vật=%s", len(characters))
-        self._characters.set()
-
     def _handle_subcommand(self, data: bytes) -> None:
         reader = BufferReader(data)
         if not reader.remaining:
             return
         subcommand = reader.u8()
+
+        if subcommand == 4:
+            if reader.remaining < 28:
+                return
+            self.character.gold = reader.i64()
+            self.character.gem = reader.i32()
+            reader.i64()
+            reader.i64()
+            self.character.locked_gem = reader.i32()
+            logger.info(
+                "Game login: cập nhật tiền vàng=%s ngọc=%s ngọc_khóa=%s",
+                self.character.gold,
+                self.character.gem,
+                self.character.locked_gem,
+            )
+            return
+
         if subcommand != 0:
             return
 
@@ -479,7 +478,33 @@ class GameClient:
         self.character.gold = reader.i64()
         self.character.locked_gem = reader.i32()
         self.character.gem = reader.i32()
+        logger.info(
+            "Game login: nhận nhân vật %s (id=%s), vàng=%s ngọc=%s ngọc_khóa=%s",
+            self.character.name,
+            self.character.player_id,
+            self.character.gold,
+            self.character.gem,
+            self.character.locked_gem,
+        )
         self._character_ready.set()
+
+    def _handle_game_message(self, data: bytes) -> None:
+        reader = BufferReader(data)
+        try:
+            name = reader.utf()
+            message = reader.utf()
+        except ValueError:
+            return
+
+        if name:
+            return
+
+        self.character.mission_notice = message
+        if message.startswith(
+            ("Nhiệm vụ của bạn là", "Your mission is", "Misimu adalah")
+        ):
+            logger.info("Game login: nhận thông báo nhiệm vụ")
+            self._task_ready.set()
 
     def _handle_money_update(self, data: bytes) -> None:
         reader = BufferReader(data)
