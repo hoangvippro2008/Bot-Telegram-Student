@@ -58,7 +58,7 @@ async def _edit(
     parse_mode: str | None = ParseMode.HTML,
 ) -> bool:
     try:
-        await _edit(query, 
+        await query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode=parse_mode,
